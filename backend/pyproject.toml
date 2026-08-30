@@ -1,0 +1,26 @@
+[tool.poetry]
+name = "douyin-downloader"
+version = "0.1.0"
+description = "Download Douyin videos without watermark via Playwright API interception"
+authors = []
+python = "^3.11"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+playwright = "^1.44"
+aiohttp = "^3.9"
+aiofiles = "^23.2"
+rich = "^13.7"
+click = "^8.1"
+httpx = "^0.28"
+python-dotenv = "^1.0"
+fastapi = "^0.141"
+uvicorn = {extras = ["standard"], version = "^0.52"}
+yt-dlp = "^2026.8.19"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+douyin = "main:cli"

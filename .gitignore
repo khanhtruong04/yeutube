@@ -1,0 +1,47 @@
+# Downloads
+downloads/
+
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/voices/__pycache__/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# CSV data (large)
+index.csv
+
+# Web app (Phase 0-2)
+jobs.db
+frontend/.next/
+
+# Cookies (chứa session đăng nhập — không commit)
+cookies.json
+cookies_playwright.json
+cookies_netscape.txt

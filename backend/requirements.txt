@@ -1,0 +1,13 @@
+playwright>=1.44
+aiohttp>=3.9
+aiofiles>=23.2
+rich>=13.7
+click>=8.1
+faster-whisper>=1.0.0
+httpx>=0.28
+python-dotenv>=1.0
+
+# Web API (Phase 0-2)
+fastapi>=0.141
+uvicorn[standard]>=0.52
+yt-dlp>=2026.8.19
