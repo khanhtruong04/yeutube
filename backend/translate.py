@@ -10,6 +10,7 @@ Usage:
   from backend.translate import translate_transcript
   transcript_vi = await translate_transcript(transcript, target_language="vi")
 """
+import asyncio
 import json
 import os
 
@@ -21,6 +22,11 @@ DEFAULT_MODEL = "openai/gpt-4o-mini"
 # Gửi cả trăm đoạn 1 lượt thì model hay gộp/bỏ đoạn (thực tế: 154 đoạn -> trả 143).
 # Chia lô nhỏ để giữ đúng số lượng; lô nào vẫn lệch thì _translate_texts tự chia đôi.
 BATCH_SIZE = 25
+
+# Các lô độc lập nhau nên dịch song song thay vì xếp hàng chờ từng lô: video 200
+# đoạn = 8 lô, chạy tuần tự thì cộng dồn 8 lượt chờ mạng. Giới hạn 4 để không bị
+# OpenRouter chặn vì gọi quá dày.
+MAX_PARALLEL_BATCHES = 4
 
 _LANG_NAMES = {
     "vi": "Tiếng Việt", "en": "English", "zh": "中文", "ja": "日本語",
@@ -126,13 +132,18 @@ async def translate_transcript(transcript: dict, target_language: str = "vi") ->
     context = transcript.get("text", "")
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
-    translated: list[str] = []
+    batches = [texts[i:i + BATCH_SIZE] for i in range(0, len(texts), BATCH_SIZE)]
     async with httpx.AsyncClient(timeout=180) as client:
-        for i in range(0, len(texts), BATCH_SIZE):
-            batch = texts[i:i + BATCH_SIZE]
-            translated.extend(
-                await _translate_texts(client, batch, context, target_language, model, headers)
-            )
+        sem = asyncio.Semaphore(MAX_PARALLEL_BATCHES)
+
+        async def run_batch(batch: list[str]) -> list[str]:
+            async with sem:
+                return await _translate_texts(client, batch, context, target_language, model, headers)
+
+        # gather giữ nguyên thứ tự kết quả theo thứ tự batch -> ghép lại vẫn đúng
+        # thứ tự đoạn gốc.
+        results = await asyncio.gather(*(run_batch(b) for b in batches))
+    translated: list[str] = [t for r in results for t in r]
 
     if len(translated) != len(segments):  # phòng hờ, không nên xảy ra
         raise RuntimeError(

@@ -2,9 +2,10 @@
 Sinh SRT + trộn audio/ghép video — tách từ script inline trong skill voice-over
 (bước 5, 6) thành hàm dùng chung cho pipeline web.
 """
-import asyncio
 import json
 from pathlib import Path
+
+from .proc_util import run_command
 
 
 def _fmt_srt_time(seconds: float) -> str:
@@ -35,18 +36,48 @@ def generate_srt_from_file(transcript_path: str, srt_path: str) -> int:
 
 async def _duration(path: str) -> float | None:
     """Độ dài (giây) của file media qua ffprobe. None nếu không đọc được."""
-    proc = await asyncio.create_subprocess_exec(
+    code, stdout, _ = await run_command([
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1", path,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, _ = await proc.communicate()
-    if proc.returncode != 0:
+    ])
+    if code != 0:
         return None
     try:
         return float(stdout.decode().strip())
     except ValueError:
         return None
+
+
+async def probe_video(path: str) -> dict:
+    """Trả về {width, height, duration} của file video qua ffprobe."""
+    code, stdout, stderr = await run_command([
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height:format=duration",
+        "-of", "json", path,
+    ])
+    if code != 0:
+        raise RuntimeError(f"ffprobe lỗi: {stderr.decode(errors='replace')[-500:]}")
+    data = json.loads(stdout.decode())
+    stream = (data.get("streams") or [{}])[0]
+    fmt = data.get("format") or {}
+    return {
+        "width": int(stream.get("width", 0)),
+        "height": int(stream.get("height", 0)),
+        "duration": float(fmt.get("duration", 0)),
+    }
+
+
+async def dub_audio_filter(video_path: str, dub_path: str, volume_dub: float, fit_to_video: bool = True) -> str:
+    """Sinh filter cho stream audio dub (dùng chung bởi mix_and_mux và render.py):
+    tự thêm atempo nếu dub dài hơn video, để không bị dư audio khi ghép."""
+    dub_filter = f"volume={volume_dub}"
+    if fit_to_video:
+        video_dur = await _duration(video_path)
+        dub_dur = await _duration(dub_path)
+        if video_dur and dub_dur and dub_dur > video_dur:
+            tempo = min(2.0, dub_dur / video_dur)
+            dub_filter = f"atempo={tempo:.4f},volume={volume_dub}"
+    return dub_filter
 
 
 async def mix_and_mux(
@@ -68,13 +99,7 @@ async def mix_and_mux(
     """
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-    dub_filter = f"volume={volume_dub}"
-    if fit_to_video:
-        video_dur = await _duration(video_path)
-        dub_dur = await _duration(dub_path)
-        if video_dur and dub_dur and dub_dur > video_dur:
-            tempo = min(2.0, dub_dur / video_dur)
-            dub_filter = f"atempo={tempo:.4f},volume={volume_dub}"
+    dub_filter = await dub_audio_filter(video_path, dub_path, volume_dub, fit_to_video)
 
     filter_complex = (
         f"[0:a]volume={volume_goc}[orig];"
@@ -90,9 +115,6 @@ async def mix_and_mux(
         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
         output_path,
     ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg lỗi (code {proc.returncode}): {stderr.decode(errors='replace')[-2000:]}")
+    code, _, stderr = await run_command(cmd)
+    if code != 0:
+        raise RuntimeError(f"ffmpeg lỗi (code {code}): {stderr.decode(errors='replace')[-2000:]}")

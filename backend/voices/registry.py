@@ -6,11 +6,20 @@ Chỉ 4 provider có adapter thật được hỗ trợ. "openai" xuất hiện 
 voice/openai.csv và SKILL.md nhưng chưa có backend/voices/openai.py — cố tình
 không đưa vào registry để tránh quảng cáo 1 provider không chạy được.
 """
+import asyncio
 import csv
 import os
 from pathlib import Path
 
 from . import edgetts, elevenlabs, omnivoice, vbee
+
+# Số lần thử lại + thời gian chờ giữa các lần khi 1 lệnh TTS lỗi thoáng qua
+# (vd. edge-tts hay báo "No audio was received" ngẫu nhiên khi server Microsoft
+# hoặc mạng chập chờn). Quan trọng từ khi TTS chạy theo từng câu (dub_timeline.py)
+# thay vì 1 lần cho cả bài — số lượt gọi tăng từ 1 lên hàng trăm mỗi job, nên lỗi
+# thoáng qua dễ làm hỏng cả job nếu không có retry.
+_TTS_RETRIES = 4
+_TTS_RETRY_DELAY = 1.5
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 VOICE_DIR = PROJECT_ROOT / "voice"
@@ -131,14 +140,29 @@ async def run_tts(
     if provider == "elevenlabs":
         if not voice:
             raise ValueError("elevenlabs bắt buộc phải có voice_code.")
-        return await module.run_tts(text=text, voice_code=voice, output=output, log=log)
+        call = lambda: module.run_tts(text=text, voice_code=voice, output=output, log=log)
+    else:
+        # vbee / omnivoice / edgetts: voice_code optional (module tự có default),
+        # speed chỉ vbee/omnivoice hỗ trợ.
+        kwargs = {"text": text, "voice_code": voice, "output": output, "log": log}
+        if provider in ("vbee", "omnivoice") and speed is not None:
+            kwargs["speed"] = speed
+        call = lambda: module.run_tts(**kwargs)
 
-    # vbee / omnivoice / edgetts: voice_code optional (module tự có default),
-    # speed chỉ vbee/omnivoice hỗ trợ.
-    kwargs = {"text": text, "voice_code": voice, "output": output, "log": log}
-    if provider in ("vbee", "omnivoice") and speed is not None:
-        kwargs["speed"] = speed
-    return await module.run_tts(**kwargs)
+    _log = log or (lambda _: None)
+    last_error: Exception | None = None
+    for attempt in range(_TTS_RETRIES + 1):
+        try:
+            return await call()
+        except Exception as e:
+            last_error = e
+            if attempt < _TTS_RETRIES:
+                # Chờ lâu dần: Edge TTS trả NoAudioReceived khi đang bị gọi quá
+                # dày, thử lại ngay lập tức thường lỗi tiếp.
+                delay = _TTS_RETRY_DELAY * (attempt + 1)
+                _log(f"[registry] '{provider}' lỗi thoáng qua ({e!s:.150}), chờ {delay:.1f}s rồi thử lần {attempt + 2}...")
+                await asyncio.sleep(delay)
+    raise last_error
 
 
 async def synthesize(

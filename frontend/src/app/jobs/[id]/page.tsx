@@ -2,15 +2,27 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { api, fileUrl, STATUS_LABELS, type Job } from "@/lib/api";
+import { api, fileUrl, jobProgressPercent, STATUS_LABELS, type Job } from "@/lib/api";
+import MaskEditor from "@/components/MaskEditor";
+import LayoutEditor from "@/components/LayoutEditor";
 
 const TERMINAL_STATUSES = new Set(["done", "error"]);
+const AWAITING_STATUSES = new Set(["awaiting_masks", "awaiting_layout"]);
 
 export default function JobPage() {
   const params = useParams<{ id: string }>();
   const jobId = params.id;
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  async function refetch() {
+    if (!jobId) return;
+    try {
+      setJob(await api.getJob(jobId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không tải được job");
+    }
+  }
 
   useEffect(() => {
     if (!jobId) return;
@@ -58,9 +70,20 @@ export default function JobPage() {
               <span className="text-sm font-medium">Trạng thái</span>
               <StatusBadge status={job.status} />
             </div>
-            {job.status !== "done" && job.status !== "error" && (
-              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800">
-                <div className="h-full w-1/2 animate-pulse rounded-full bg-black dark:bg-white" />
+            {job.status !== "done" && job.status !== "error" && !AWAITING_STATUSES.has(job.status) && (
+              <div className="mt-2">
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800">
+                  <div
+                    className="h-full rounded-full bg-black transition-all duration-500 dark:bg-white"
+                    style={{ width: `${jobProgressPercent(job)}%` }}
+                  />
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  {jobProgressPercent(job)}%
+                  {job.status === "synthesizing" && job.progress_total > 0 && (
+                    <> — đang lồng tiếng câu {job.progress_current}/{job.progress_total}</>
+                  )}
+                </p>
               </div>
             )}
             {job.status === "error" && job.error && (
@@ -69,6 +92,9 @@ export default function JobPage() {
               </p>
             )}
           </div>
+
+          {job.status === "awaiting_masks" && <MaskEditor job={job} onSubmitted={refetch} />}
+          {job.status === "awaiting_layout" && <LayoutEditor job={job} onSubmitted={refetch} />}
 
           {job.status === "done" && job.result && (
             <div className="flex flex-col gap-4 rounded-xl border border-gray-200 p-5 dark:border-gray-800">
@@ -98,6 +124,12 @@ export default function JobPage() {
             <dd>{job.stt_language || "Tự động"}</dd>
             <dt>Ngôn ngữ đích</dt>
             <dd>{job.target_language}</dd>
+            <dt>Độ phân giải</dt>
+            <dd>
+              {job.target_resolution}p tối đa
+              {job.video_width && job.video_height && ` — tải về ${job.video_width}x${job.video_height}`}
+              {job.upscale && ` — phóng to lên ${job.target_resolution}p`}
+            </dd>
           </dl>
         </div>
       )}

@@ -22,9 +22,13 @@ from .routers import jobs, meta, voices  # noqa: E402
 
 app = FastAPI(title="Video Dubbing API")
 
+# Mở cho mọi origin để máy khác cùng mạng LAN vào được qua IP (vd.
+# http://192.168.1.6:3000). An toàn ở mức tương đương cấu hình cũ: API không
+# dùng cookie/credential nên CORS không phải lớp bảo vệ ở đây — thứ quyết định
+# ai truy cập được là việc server có mở ra ngoài mạng hay không (--host).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

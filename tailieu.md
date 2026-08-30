@@ -3,6 +3,8 @@
 > Tài liệu này mô tả việc **xây dựng phiên bản web** cho công cụ tải video + lồng tiếng Việt vốn chạy dưới dạng **CLI Python + Claude Code Agent Skills** tại project này. Lớp web (API + UI) bọc lên engine Python có sẵn trong [backend/](backend/), không viết lại từ đầu.
 >
 > **Trạng thái: Phase 0 → 2 đã hoàn thành và chạy được end-to-end.** Cách chạy xem [README.md](README.md). Phase 3–4 (tuỳ biến nâng cao, đa người dùng) còn ở dạng kế hoạch — xem mục 10.
+>
+> **Đã mở rộng thêm ngoài Phase 0-2 gốc**: job giờ dừng lại **2 lần chờ thao tác tay** — vẽ box che (mask, blur/màu đặc, theo khoảng thời gian) sau khi tải video, và đặt vùng vị trí phụ đề (burn-in cứng, theo khoảng thời gian) sau khi dịch xong. Xem chi tiết ở mục 4b bên dưới. Đã test end-to-end qua API thật, xác nhận bằng mắt (trích frame) mask + subtitle burn đúng vị trí/thời điểm.
 
 ---
 

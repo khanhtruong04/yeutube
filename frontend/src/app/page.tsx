@@ -12,6 +12,8 @@ export default function HomePage() {
   const [volumeDub, setVolumeDub] = useState(100);
   const [sttLanguage, setSttLanguage] = useState(""); // "" = auto-detect
   const [targetLanguage, setTargetLanguage] = useState("vi");
+  const [resolution, setResolution] = useState<720 | 1080>(1080);
+  const [upscale, setUpscale] = useState(false);
   const [languages, setLanguages] = useState<Language[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -35,6 +37,8 @@ export default function HomePage() {
         target_language: targetLanguage,
         volume_goc: volumeGoc / 100,
         volume_dub: volumeDub / 100,
+        target_resolution: resolution,
+        upscale,
       });
       router.push(`/jobs/${job.id}`);
     } catch (err) {
@@ -83,6 +87,42 @@ export default function HomePage() {
               </label>
             ))}
           </div>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium">Độ phân giải video</span>
+          <div className="flex gap-4">
+            {([1080, 720] as const).map((r) => (
+              <label key={r} className="flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="resolution"
+                  checked={resolution === r}
+                  onChange={() => setResolution(r)}
+                />
+                {r === 1080 ? "1080p (HD)" : "720p"}
+              </label>
+            ))}
+          </div>
+          <p className="text-xs text-gray-500">
+            Đây là mức tối đa. Video gốc không có sẵn độ phân giải này thì lấy bản cao nhất bên dưới.
+          </p>
+
+          <label className="mt-1 flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={upscale}
+              onChange={(e) => setUpscale(e.target.checked)}
+            />
+            <span>
+              Phóng to cho đủ {resolution}p nếu video gốc thấp hơn
+              <span className="block text-xs text-gray-500">
+                Chỉ kéo giãn khung hình — không nét thêm, file nặng hơn và render lâu hơn. Bật khi nơi
+                đăng bắt buộc độ phân giải tối thiểu.
+              </span>
+            </span>
+          </label>
         </div>
 
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">

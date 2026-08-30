@@ -81,21 +81,81 @@ Mở 2 terminal:
 
 ```bash
 # Terminal 1 — backend API (port 8000), chạy từ project root
-backend\.venv\Scripts\python -m uvicorn backend.api.main:app --port 8000
-# macOS/Linux: backend/.venv/bin/python -m uvicorn backend.api.main:app --port 8000
+backend\.venv\Scripts\python -m uvicorn backend.api.main:app --host 0.0.0.0 --port 8000
+# macOS/Linux: backend/.venv/bin/python -m uvicorn backend.api.main:app --host 0.0.0.0 --port 8000
 
 # Terminal 2 — frontend (port 3000)
 cd frontend
 npm run dev
 ```
 
-Mở `http://localhost:3000` — nhập link video, chọn giọng đọc Nam/Nữ, chỉnh âm lượng gốc/dub, chọn ngôn ngữ STT + ngôn ngữ đích, bấm **Xử lý**. Trang tự cập nhật tiến trình, xong thì xem/tải video + file `.srt` ngay trên trình duyệt.
+> **Đừng đóng 2 cửa sổ terminal này** — đóng là server tắt, web sẽ báo lỗi kết nối. Khi job lỗi, traceback đầy đủ hiện ở cửa sổ backend.
+
+Mở `http://localhost:3000` — nhập link video, chọn giọng đọc Nam/Nữ, chọn độ phân giải (**1080p HD** hoặc **720p**), chỉnh âm lượng gốc/dub, chọn ngôn ngữ STT + ngôn ngữ đích, bấm **Xử lý**.
+
+> Độ phân giải là **mức trần**, tính theo **cạnh ngắn** khung hình nên đúng cho cả video ngang (1920x1080) lẫn video dọc kiểu Douyin/TikTok (1080x1920). Nguồn không có sẵn mức đã chọn thì lấy bản cao nhất bên dưới.
+>
+> Rất nhiều clip Douyin **chỉ có tối đa 720x1280** trên server — không phụ thuộc cookies hay tài khoản. Muốn file xuất ra đúng khung 1080p, tick thêm ô **"Phóng to cho đủ 1080p"**: ffmpeg sẽ kéo giãn khung hình lúc render (720x1280 → 1080x1920). Lưu ý đây chỉ là giãn pixel — **không nét thêm chút nào**, file nặng hơn ~50% và render lâu hơn. Chỉ nên bật khi nơi đăng bắt buộc độ phân giải tối thiểu. Job giờ dừng lại **2 lần chờ bạn thao tác** trước khi ra kết quả:
+
+```
+Tải video → [chờ bạn vẽ box che] → STT+dịch → [chờ bạn đặt vị trí phụ đề] → TTS+render → xong
+```
+
+1. **Chờ chọn vùng che** — video gốc hiện ra, kéo/resize box che (mờ hoặc màu đặc) lên vùng có text/logo gốc cần ẩn. Mỗi box áp cho toàn video hoặc 1 khoảng thời gian riêng. Không thêm box nào cũng được, bấm "Xác nhận" để bỏ qua.
+2. **Chờ đặt vị trí phụ đề** — đã có sẵn 1 vùng mặc định ở đáy khung hình cho cả video; chỉ cần thêm vùng mới nếu muốn phụ đề đổi chỗ ở 1 đoạn cụ thể (vd. tránh đè lên vùng che).
+
+Sau đó job tự chạy tiếp TTS + burn mask/phụ đề vào video (không còn `-c:v copy` — re-encode nên chậm hơn trước), xong thì xem/tải `output_vi.mp4` (đã che + phụ đề cứng) + `subtitle_vi.srt` rời ngay trên trình duyệt.
 
 Ghi chú:
 - Job chạy nền trong tiến trình FastAPI (không cần Redis/Celery) — đủ dùng cho 1 người, vài job cùng lúc.
 - Kết quả lưu tại `downloads/web/<job_id>/`; danh sách job lưu trong `jobs.db` (SQLite, tách biệt hoàn toàn với `index.csv` của CLI, không ảnh hưởng lẫn nhau).
 - Bước dịch bắt buộc có `OPENROUTER_API_KEY` trong `.env` — thiếu key thì job sẽ báo lỗi rõ ràng ở bước "translating".
 - Giọng đọc Nam/Nữ chọn tự động theo provider TTS khả dụng (ưu tiên Vbee → ElevenLabs → Edge TTS → OmniVoice). Nếu provider bị lỗi (hết quota, sai key, server tắt) hệ thống **tự chuyển sang provider kế tiếp**, không fail cả job.
+
+### Cho máy khác cùng mạng LAN dùng chung
+
+Chạy đúng 2 lệnh ở trên (backend đã có `--host 0.0.0.0`, frontend Next tự mở ra mạng) rồi đưa người dùng địa chỉ **IP LAN của máy chủ** thay cho `localhost`:
+
+```
+http://192.168.1.6:3000        ← thay bằng IP thật của máy bạn
+```
+
+Xem IP máy mình:
+
+```
+:: Windows — Command Prompt (cmd)
+ipconfig
+```
+
+```powershell
+# Windows — PowerShell
+Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -like '192.168.*' -or $_.IPAddress -like '10.*' }
+```
+
+```bash
+# macOS/Linux
+ifconfig | grep "inet "
+```
+
+Không cần sửa cấu hình gì thêm: frontend tự suy ra địa chỉ backend theo hostname đang truy cập (mở bằng `192.168.1.6` thì gọi API ở `192.168.1.6:8000`).
+
+Nếu máy khác vào không được dù đã đúng IP, gần như chắc chắn do **Windows Firewall chặn cổng vào**. Chạy 1 lần trên máy chủ, **bắt buộc quyền Administrator** (Start → gõ `cmd` → chuột phải → *Run as administrator*):
+
+```
+:: Command Prompt (cmd)
+netsh advfirewall firewall add rule name="Video Dubbing web" dir=in action=allow protocol=TCP localport=3000,8000 profile=private
+```
+
+```powershell
+# PowerShell
+New-NetFirewallRule -DisplayName "Video Dubbing web" -Direction Inbound -Protocol TCP -LocalPort 3000,8000 -Action Allow -Profile Private
+```
+
+> Hai lệnh trên là **của 2 shell khác nhau, không dùng lẫn** — gõ lệnh PowerShell trong cmd sẽ báo `'New-NetFirewallRule' is not recognized`.
+>
+> `profile=private` giới hạn ở mạng bạn đã đặt là "Private" (mạng nhà/công ty), không mở khi nối vào Wi-Fi công cộng.
+
+**Lưu ý an toàn:** web app **không có đăng nhập**. Ai vào được địa chỉ trên đều tạo job được và xem/tải được mọi video trong `downloads/` qua đường dẫn `/files/...`. Chỉ chạy `--host 0.0.0.0` trong mạng bạn tin tưởng; đừng mở cổng (port forwarding) ra Internet.
 
 ### Tải video Douyin trên web app — cần cookies
 
