@@ -39,6 +39,15 @@ cd ..
 
 > `yt-dlp` được cài kèm trong `requirements.txt` (dùng qua Python, không cần cài CLI riêng).
 
+**Có card NVIDIA?** Bước nhận diện giọng nói (Whisper) tự dùng GPU nếu có, nhanh hơn CPU đáng kể — đo trên RTX 3050: model `base` nhanh **gấp 4**, model `small` nhanh **gấp 8.8**. Cần cài thêm 2 gói CUDA:
+
+```bash
+# Windows
+backend\.venv\Scripts\pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
+```
+
+Không có GPU, hoặc GPU lỗi giữa chừng, hệ thống **tự lùi về CPU** chứ không hỏng job. Muốn ép chạy CPU thì thêm `WHISPER_DEVICE=cpu` vào `.env`.
+
 Tạo file `.env` ở project root:
 
 ```env
@@ -98,8 +107,11 @@ Mở `http://localhost:3000` — nhập link video, chọn giọng đọc Nam/N�
 > Rất nhiều clip Douyin **chỉ có tối đa 720x1280** trên server — không phụ thuộc cookies hay tài khoản. Muốn file xuất ra đúng khung 1080p, tick thêm ô **"Phóng to cho đủ 1080p"**: ffmpeg sẽ kéo giãn khung hình lúc render (720x1280 → 1080x1920). Lưu ý đây chỉ là giãn pixel — **không nét thêm chút nào**, file nặng hơn ~50% và render lâu hơn. Chỉ nên bật khi nơi đăng bắt buộc độ phân giải tối thiểu. Job giờ dừng lại **2 lần chờ bạn thao tác** trước khi ra kết quả:
 
 ```
-Tải video → [chờ bạn vẽ box che] → STT+dịch → [chờ bạn đặt vị trí phụ đề] → TTS+render → xong
+tải xong ─┬─> [bạn vẽ box che] ──> [bạn đặt vị trí phụ đề] ─┐
+          └─> STT ─> dịch ─> TTS ──────────────────────────┴─> ghép video → xong
 ```
+
+Phần máy làm (STT, dịch, TTS) **chạy song song** với lúc bạn thao tác chuột, vì các bước đó không phụ thuộc vào box che hay vị trí phụ đề. Thời gian bạn ngồi kéo box là "miễn phí". Nhánh nào xong sau thì nhánh đó khởi động bước ghép video cuối cùng — trang job hiện riêng tiến độ nền để bạn thấy máy vẫn đang chạy.
 
 1. **Chờ chọn vùng che** — video gốc hiện ra, kéo/resize box che (mờ hoặc màu đặc) lên vùng có text/logo gốc cần ẩn. Mỗi box áp cho toàn video hoặc 1 khoảng thời gian riêng. Không thêm box nào cũng được, bấm "Xác nhận" để bỏ qua.
 2. **Chờ đặt vị trí phụ đề** — đã có sẵn 1 vùng mặc định ở đáy khung hình cho cả video; chỉ cần thêm vùng mới nếu muốn phụ đề đổi chỗ ở 1 đoạn cụ thể (vd. tránh đè lên vùng che).
@@ -274,6 +286,7 @@ Tool này được xây dựng **chỉ cho mục đích cá nhân** — giúp ng
 Người dùng chịu trách nhiệm đảm bảo việc sử dụng tool tuân thủ điều khoản dịch vụ của nền tảng tương ứng và pháp luật hiện hành. Tác giả không chịu trách nhiệm với bất kỳ hành vi sử dụng nào ngoài mục đích trên.
 
 ---
+backend\.venv\Scripts\python -m uvicorn backend.api.main:app --host 0.0.0.0 --port 8000 --reload
 
 ## License
 

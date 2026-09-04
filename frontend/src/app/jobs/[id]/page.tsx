@@ -2,7 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { api, fileUrl, jobProgressPercent, STATUS_LABELS, type Job } from "@/lib/api";
+import {
+  api,
+  fileUrl,
+  jobProgressPercent,
+  prepProgressPercent,
+  PREP_LABELS,
+  STATUS_LABELS,
+  type Job,
+} from "@/lib/api";
 import MaskEditor from "@/components/MaskEditor";
 import LayoutEditor from "@/components/LayoutEditor";
 
@@ -70,7 +78,7 @@ export default function JobPage() {
               <span className="text-sm font-medium">Trạng thái</span>
               <StatusBadge status={job.status} />
             </div>
-            {job.status !== "done" && job.status !== "error" && !AWAITING_STATUSES.has(job.status) && (
+            {job.status !== "done" && job.status !== "error" && (
               <div className="mt-2">
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800">
                   <div
@@ -78,12 +86,30 @@ export default function JobPage() {
                     style={{ width: `${jobProgressPercent(job)}%` }}
                   />
                 </div>
-                <p className="mt-1 text-xs text-gray-500">
-                  {jobProgressPercent(job)}%
-                  {job.status === "synthesizing" && job.progress_total > 0 && (
-                    <> — đang lồng tiếng câu {job.progress_current}/{job.progress_total}</>
-                  )}
-                </p>
+                <p className="mt-1 text-xs text-gray-500">{jobProgressPercent(job)}%</p>
+              </div>
+            )}
+
+            {/* Nhánh nền chạy song song với thao tác của user — hiện riêng để
+                thấy máy vẫn đang làm việc trong lúc mình kéo box. */}
+            {job.status !== "done" && job.status !== "error" && job.prep_status !== "pending" && (
+              <div className="mt-3 rounded-lg bg-gray-50 p-3 text-xs dark:bg-gray-900">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-gray-600 dark:text-gray-400">
+                    Máy đang xử lý nền: {PREP_LABELS[job.prep_status] || job.prep_status}
+                    {job.prep_status === "synthesizing" && job.progress_total > 0 && (
+                      <> — câu {job.progress_current}/{job.progress_total}</>
+                    )}
+                  </span>
+                  <span className="shrink-0 tabular-nums text-gray-500">
+                    {prepProgressPercent(job)}%
+                  </span>
+                </div>
+                {AWAITING_STATUSES.has(job.status) && job.prep_status !== "ready" && (
+                  <p className="mt-1 text-gray-500">
+                    Cứ thao tác bình thường — phần này chạy song song, không phải chờ.
+                  </p>
+                )}
               </div>
             )}
             {job.status === "error" && job.error && (

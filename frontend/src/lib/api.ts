@@ -70,6 +70,7 @@ export type Job = {
   target_resolution: number;
   upscale: boolean;
   status: string;
+  prep_status: string;
   error: string | null;
   created_at: string;
   updated_at: string;
@@ -132,40 +133,51 @@ export const STATUS_LABELS: Record<string, string> = {
   queued: "Đang chờ",
   downloading: "Đang tải video",
   awaiting_masks: "Chờ chọn vùng che",
-  transcribing: "Đang nhận diện giọng nói (STT)",
-  translating: "Đang dịch",
   awaiting_layout: "Chờ đặt vị trí phụ đề",
-  synthesizing: "Đang tổng hợp giọng đọc (TTS)",
-  mixing: "Đang ghép video (có thể mất vài phút)",
+  waiting_prep: "Đang chờ máy xử lý xong",
+  rendering: "Đang ghép video (có thể mất vài phút)",
   done: "Hoàn tất",
   error: "Lỗi",
 };
 
-// % tiến trình ước lượng theo từng bước của pipeline (mốc tĩnh, không đo thời
-// gian thật) — riêng "synthesizing" được nội suy mịn hơn bằng progress_current/
-// progress_total (số câu đã lồng tiếng / tổng số câu).
-export const STATUS_PROGRESS: Record<string, number> = {
-  queued: 5,
-  downloading: 20,
-  awaiting_masks: 30,
-  transcribing: 45,
-  translating: 60,
-  awaiting_layout: 70,
-  synthesizing: 80,
-  mixing: 92,
-  done: 100,
+/** Việc máy đang làm nền, song song với thao tác của người dùng. */
+export const PREP_LABELS: Record<string, string> = {
+  pending: "Đang chờ",
+  transcribing: "Đang nhận diện giọng nói (STT)",
+  translating: "Đang dịch",
+  synthesizing: "Đang tổng hợp giọng đọc (TTS)",
+  ready: "Đã xong, sẵn sàng ghép",
+  error: "Lỗi",
+};
+
+// % tiến trình của riêng nhánh chạy nền. Mốc tĩnh, không đo thời gian thật —
+// riêng "synthesizing" nội suy mịn hơn theo số câu đã lồng tiếng.
+const PREP_PROGRESS: Record<string, number> = {
+  pending: 0,
+  transcribing: 20,
+  translating: 45,
+  synthesizing: 60,
+  ready: 100,
   error: 0,
 };
 
-const SYNTHESIZING_BAND: [number, number] = [
-  STATUS_PROGRESS.synthesizing,
-  STATUS_PROGRESS.mixing,
-];
+const SYNTHESIZING_BAND: [number, number] = [PREP_PROGRESS.synthesizing, 100];
 
-export function jobProgressPercent(job: Job): number {
-  if (job.status === "synthesizing" && job.progress_total > 0) {
+/** Tiến độ phần máy làm nền (STT -> dịch -> TTS). */
+export function prepProgressPercent(job: Job): number {
+  if (job.prep_status === "synthesizing" && job.progress_total > 0) {
     const [start, end] = SYNTHESIZING_BAND;
     return Math.round(start + (end - start) * (job.progress_current / job.progress_total));
   }
-  return STATUS_PROGRESS[job.status] ?? 0;
+  return PREP_PROGRESS[job.prep_status] ?? 0;
+}
+
+/** Tiến độ tổng thể hiển thị cho người dùng. */
+export function jobProgressPercent(job: Job): number {
+  if (job.status === "done") return 100;
+  if (job.status === "error") return 0;
+  if (job.status === "downloading" || job.status === "queued") return 10;
+  if (job.status === "rendering") return 95;
+  // Giai đoạn user thao tác: tiến độ thật nằm ở nhánh nền, quy về khoảng 15-90%.
+  return 15 + Math.round(prepProgressPercent(job) * 0.75);
 }

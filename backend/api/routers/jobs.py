@@ -3,7 +3,7 @@ import json
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from ... import jobs_store
-from ..pipeline import run_stage1_download, run_stage2_process, run_stage3_render
+from ..pipeline import maybe_render, run_stage1_download
 from ..schemas import JobCreate, JobOut, SubmitLayout, SubmitMasks
 
 router = APIRouter(tags=["jobs"])
@@ -31,7 +31,9 @@ async def get_job(job_id: str):
 
 
 @router.post("/jobs/{job_id}/masks", response_model=JobOut)
-async def submit_masks(job_id: str, payload: SubmitMasks, background_tasks: BackgroundTasks):
+async def submit_masks(job_id: str, payload: SubmitMasks):
+    """Chỉ lưu box che rồi cho user sang bước đặt phụ đề. Không khởi động STT ở
+    đây — nó đã chạy nền từ lúc tải xong, song song với lúc user vẽ box."""
     row = await jobs_store.get_job(job_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Job không tồn tại")
@@ -42,8 +44,7 @@ async def submit_masks(job_id: str, payload: SubmitMasks, background_tasks: Back
         )
 
     masks_json = json.dumps([m.model_dump() for m in payload.masks], ensure_ascii=False)
-    await jobs_store.update_job(job_id, masks_json=masks_json)
-    background_tasks.add_task(run_stage2_process, job_id)
+    await jobs_store.update_job(job_id, masks_json=masks_json, status="awaiting_layout")
 
     row = await jobs_store.get_job(job_id)
     return JobOut.from_row(row)
@@ -61,10 +62,15 @@ async def submit_layout(job_id: str, payload: SubmitLayout, background_tasks: Ba
         )
 
     layout_json = json.dumps([z.model_dump() for z in payload.layout], ensure_ascii=False)
+    # waiting_prep = user xong việc, chỉ còn chờ máy. Nếu máy đã xong sẵn thì
+    # maybe_render bên dưới khởi động render ngay.
     await jobs_store.update_job(
-        job_id, text_layout_json=layout_json, subtitles_enabled=int(payload.enabled)
+        job_id,
+        text_layout_json=layout_json,
+        subtitles_enabled=int(payload.enabled),
+        status="waiting_prep",
     )
-    background_tasks.add_task(run_stage3_render, job_id)
+    background_tasks.add_task(maybe_render, job_id)
 
     row = await jobs_store.get_job(job_id)
     return JobOut.from_row(row)

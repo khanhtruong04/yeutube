@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     volume_dub REAL DEFAULT 1.0,
     speed REAL,
     status TEXT DEFAULT 'queued',
+    prep_status TEXT DEFAULT 'pending',
     error TEXT,
     folder TEXT,
     video_width INTEGER,
@@ -79,6 +80,7 @@ def _create_job_sync(fields: dict) -> dict:
         "target_resolution": fields.get("target_resolution") or 1080,
         "upscale": int(bool(fields.get("upscale"))),
         "status": "queued",
+        "prep_status": "pending",
         "error": None,
         "folder": None,
         "subtitles_enabled": 1,
@@ -109,6 +111,25 @@ def _update_job_sync(job_id: str, fields: dict) -> None:
 
 async def update_job(job_id: str, **fields) -> None:
     await asyncio.to_thread(_update_job_sync, job_id, fields)
+
+
+def _claim_render_sync(job_id: str) -> bool:
+    """Đặt status='rendering' CHỈ KHI cả 2 nhánh đã xong, trong 1 câu UPDATE duy
+    nhất. Nhờ vậy 2 nhánh chạy song song kết thúc cùng lúc cũng chỉ 1 bên giành
+    được quyền render (bên kia thấy rowcount=0). Trả về True nếu giành được."""
+    now = datetime.now().isoformat(timespec="seconds")
+    with _conn() as conn:
+        cur = conn.execute(
+            "UPDATE jobs SET status = 'rendering', updated_at = ? "
+            "WHERE id = ? AND prep_status = 'ready' AND text_layout_json IS NOT NULL "
+            "AND status IN ('awaiting_layout', 'waiting_prep')",
+            (now, job_id),
+        )
+        return cur.rowcount == 1
+
+
+async def claim_render(job_id: str) -> bool:
+    return await asyncio.to_thread(_claim_render_sync, job_id)
 
 
 def _get_job_sync(job_id: str) -> dict | None:

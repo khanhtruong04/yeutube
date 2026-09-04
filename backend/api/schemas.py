@@ -72,6 +72,7 @@ class JobOut(BaseModel):
     target_resolution: int = 1080
     upscale: bool = False
     status: str
+    prep_status: str = "pending"
     error: str | None = None
     created_at: str
     updated_at: str
