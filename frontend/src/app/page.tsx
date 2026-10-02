@@ -1,8 +1,7 @@
-"use client";
-
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api, type Job, type Language } from "@/lib/api";
+import { api, fileUrl, jobProgressPercent, prepProgressPercent, PREP_LABELS, STATUS_LABELS, type Job, type Language, type JobCreatePayload, type FreeVoice } from "@/lib/api";
+import CookieStatusBanner from "@/components/CookieStatusBanner";
 
 export default function HomePage() {
   const router = useRouter();
@@ -18,11 +17,17 @@ export default function HomePage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [freeVoices, setFreeVoices] = useState<FreeVoice[]>([]);
+  const [selectedVoiceId, setSelectedVoiceId] = useState<string>("");
 
   useEffect(() => {
     api.getLanguages().then(setLanguages).catch(() => {});
     api.listJobs().then(setJobs).catch(() => {});
+    // Load free voice options from the backend
+    api.getFreeVoices().then(setFreeVoices).catch(() => {});
   }, []);
+
+  const filteredVoices = freeVoices.filter((v) => v.gender === voiceGender);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -30,7 +35,7 @@ export default function HomePage() {
     setSubmitting(true);
     setError(null);
     try {
-      const job = await api.createJob({
+      const payload: JobCreatePayload = {
         video_url: videoUrl.trim(),
         voice_gender: voiceGender,
         stt_language: sttLanguage || null,
@@ -39,7 +44,13 @@ export default function HomePage() {
         volume_dub: volumeDub / 100,
         target_resolution: resolution,
         upscale,
-      });
+      };
+      // Include voice code if the user selected one
+      if (selectedVoiceId) {
+        // @ts-ignore – the API accepts optional voice_code field
+        payload.voice_code = selectedVoiceId;
+      }
+      const job = await api.createJob(payload);
       router.push(`/jobs/${job.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Có lỗi xảy ra");
@@ -55,6 +66,8 @@ export default function HomePage() {
           Dán link video, chọn giọng đọc và ngôn ngữ — hệ thống tự động tải, dịch, lồng tiếng.
         </p>
       </header>
+
+      <CookieStatusBanner />
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-5 rounded-xl border border-gray-200 p-6 dark:border-gray-800">
         <div className="flex flex-col gap-1.5">
@@ -89,6 +102,28 @@ export default function HomePage() {
           </div>
         </div>
 
+        {/* Voice selector for free voices (optional) */}
+        {filteredVoices.length > 0 && (
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="voice_selector" className="text-sm font-medium">
+              Chọn giọng đọc (tùy chọn)
+            </label>
+            <select
+              id="voice_selector"
+              value={selectedVoiceId}
+              onChange={(e) => setSelectedVoiceId(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 p-2 text-sm dark:border-gray-700"
+            >
+              <option value="">— Tự động chọn —</option>
+              {filteredVoices.map((v) => (
+                <option key={v.voice_id} value={v.voice_id}>
+                  {v.model_name} ({v.voice_id})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
         <div className="flex flex-col gap-1.5">
           <span className="text-sm font-medium">Độ phân giải video</span>
           <div className="flex gap-4">
@@ -118,8 +153,7 @@ export default function HomePage() {
             <span>
               Phóng to cho đủ {resolution}p nếu video gốc thấp hơn
               <span className="block text-xs text-gray-500">
-                Chỉ kéo giãn khung hình — không nét thêm, file nặng hơn và render lâu hơn. Bật khi nơi
-                đăng bắt buộc độ phân giải tối thiểu.
+                Chỉ kéo giãn khung hình — không nét thêm, file nặng hơn và render lâu hơn. Bật khi nơi đăng bắt buộc độ phân giải tối thiểu.
               </span>
             </span>
           </label>
