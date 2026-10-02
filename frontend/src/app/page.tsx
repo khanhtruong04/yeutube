@@ -1,6 +1,19 @@
+"use client";
+
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api, fileUrl, jobProgressPercent, prepProgressPercent, PREP_LABELS, STATUS_LABELS, type Job, type Language, type JobCreatePayload, type FreeVoice } from "@/lib/api";
+import {
+  api,
+  fileUrl,
+  jobProgressPercent,
+  prepProgressPercent,
+  PREP_LABELS,
+  STATUS_LABELS,
+  type Job,
+  type Language,
+  type JobCreatePayload,
+  type FreeVoice,
+} from "@/lib/api";
 import CookieStatusBanner from "@/components/CookieStatusBanner";
 
 export default function HomePage() {
@@ -23,7 +36,6 @@ export default function HomePage() {
   useEffect(() => {
     api.getLanguages().then(setLanguages).catch(() => {});
     api.listJobs().then(setJobs).catch(() => {});
-    // Load free voice options from the backend
     api.getFreeVoices().then(setFreeVoices).catch(() => {});
   }, []);
 
