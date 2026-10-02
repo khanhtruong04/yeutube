@@ -114,25 +114,26 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Voice selector for free voices (optional) */}
+        {/* List free voices for selected gender */}
         {filteredVoices.length > 0 && (
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="voice_selector" className="text-sm font-medium">
-              Chọn giọng đọc (tùy chọn)
-            </label>
-            <select
-              id="voice_selector"
-              value={selectedVoiceId}
-              onChange={(e) => setSelectedVoiceId(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 p-2 text-sm dark:border-gray-700"
-            >
-              <option value="">— Tự động chọn —</option>
+            <span className="text-sm font-medium">
+              Lựa chọn giọng đọc ({voiceGender === "female" ? "Nữ" : "Nam"})
+            </span>
+            <ul className="space-y-2">
               {filteredVoices.map((v) => (
-                <option key={v.voice_id} value={v.voice_id}>
-                  {v.model_name} ({v.voice_id})
-                </option>
+                <li key={v.voice_id} className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="freeVoice"
+                    value={v.voice_id}
+                    checked={selectedVoiceId === v.voice_id}
+                    onChange={() => setSelectedVoiceId(v.voice_id)}
+                  />
+                  <span>{v.model_name} ({v.voice_id})</span>
+                </li>
               ))}
-            </select>
+            </ul>
           </div>
         )}
 
