@@ -13,6 +13,7 @@ import {
 } from "@/lib/api";
 import MaskEditor from "@/components/MaskEditor";
 import LayoutEditor from "@/components/LayoutEditor";
+import CookieStatusBanner from "@/components/CookieStatusBanner";
 
 const TERMINAL_STATUSES = new Set(["done", "error"]);
 const AWAITING_STATUSES = new Set(["awaiting_masks", "awaiting_layout"]);
@@ -22,6 +23,9 @@ export default function JobPage() {
   const jobId = params.id;
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  // Tăng lên sau khi chạy lại job để vòng poll (đã dừng khi job lỗi) chạy lại.
+  const [pollKey, setPollKey] = useState(0);
 
   async function refetch() {
     if (!jobId) return;
@@ -29,6 +33,19 @@ export default function JobPage() {
       setJob(await api.getJob(jobId));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Không tải được job");
+    }
+  }
+
+  async function handleRetry() {
+    setRetrying(true);
+    setError(null);
+    try {
+      setJob(await api.retryJob(jobId));
+      setPollKey((k) => k + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không chạy lại được job");
+    } finally {
+      setRetrying(false);
     }
   }
 
@@ -55,13 +72,15 @@ export default function JobPage() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [jobId]);
+  }, [jobId, pollKey]);
 
   return (
     <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 py-10">
       <a href="/" className="text-sm text-gray-500 hover:underline">
         ← Tạo job mới
       </a>
+
+      <CookieStatusBanner />
 
       {error && <p className="text-sm text-red-600">{error}</p>}
       {!job && !error && <p className="text-sm text-gray-500">Đang tải...</p>}
@@ -112,10 +131,25 @@ export default function JobPage() {
                 )}
               </div>
             )}
-            {job.status === "error" && job.error && (
-              <p className="mt-2 rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
-                {job.error}
-              </p>
+            {job.status === "error" && (
+              <div className="mt-2 flex flex-col items-start gap-2">
+                {job.error && (
+                  <p className="w-full rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+                    {job.error}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onClick={handleRetry}
+                  disabled={retrying}
+                  className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-black"
+                >
+                  {retrying ? "Đang chạy lại..." : "Chạy lại"}
+                </button>
+                <p className="text-xs text-gray-500">
+                  Dùng lại video và các phần đã xong, chỉ làm lại phần còn thiếu.
+                </p>
+              </div>
             )}
           </div>
 
@@ -126,7 +160,23 @@ export default function JobPage() {
             <div className="flex flex-col gap-4 rounded-xl border border-gray-200 p-5 dark:border-gray-800">
               <h2 className="text-sm font-medium">Kết quả</h2>
               {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-              <video controls className="w-full rounded-lg" src={fileUrl(job.result.video_url)} />
+              <video
+                controls
+                poster={fileUrl(job.result.thumbnail_url)}
+                className="w-full rounded-lg"
+                src={fileUrl(job.result.video_url)}
+              />
+
+              <div className="flex flex-col gap-2">
+                <span className="text-xs text-gray-500">Ảnh thumbnail (khung hình đầu tiên)</span>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={fileUrl(job.result.thumbnail_url)}
+                  alt="Thumbnail khung hình đầu tiên của video"
+                  className="w-40 rounded-lg border border-gray-200 dark:border-gray-800"
+                />
+              </div>
+
               <div className="flex flex-wrap gap-3 text-sm">
                 <a className="underline" href={fileUrl(job.result.video_url)} download>
                   Tải video (.mp4)
@@ -136,6 +186,9 @@ export default function JobPage() {
                 </a>
                 <a className="underline" href={fileUrl(job.result.dub_audio_url)} download>
                   Tải audio giọng đọc (.mp3)
+                </a>
+                <a className="underline" href={fileUrl(job.result.thumbnail_url)} download>
+                  Tải thumbnail (.jpg)
                 </a>
               </div>
             </div>

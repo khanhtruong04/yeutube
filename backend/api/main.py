@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 
@@ -8,6 +9,11 @@ from pathlib import Path
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    # Playwright và ffmpeg dùng asyncio.create_subprocess_exec vốn chỉ chạy
+    # được trên ProactorEventLoop. Khi bật --reload, uvicorn tự đổi sang
+    # WindowsSelectorEventLoopPolicy và làm hỏng Playwright.
+    # Ép lại ProactorEventLoop trước khi uvicorn can thiệp.
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -18,6 +24,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 from .. import jobs_store  # noqa: E402
+from . import pipeline  # noqa: E402
 from .routers import jobs, meta, voices  # noqa: E402
 
 app = FastAPI(title="Video Dubbing API")
@@ -42,9 +49,33 @@ app.include_router(voices.router, prefix="/api")
 app.include_router(meta.router, prefix="/api")
 
 
+async def _recover_stalled_jobs():
+    """Tự động phát hiện và tiếp tục các job bị gián đoạn do server restart/reload."""
+    await asyncio.sleep(1.0)
+    try:
+        rows = await jobs_store.list_jobs(limit=100)
+        for r in rows:
+            jid = r["id"]
+            status = r["status"]
+            prep_status = r.get("prep_status")
+            folder = Path(r["folder"]) if r.get("folder") else None
+
+            if status == "waiting_prep" and prep_status in ("synthesizing", "translating", "transcribing", "pending"):
+                if folder and (folder / "index.mp4").exists():
+                    print(f"[recovery] Khôi phục job {jid} đang dở ở bước prep...")
+                    asyncio.create_task(pipeline.run_prep(jid))
+            elif status == "rendering":
+                if folder and (folder / "dub_vi.mp3").exists():
+                    print(f"[recovery] Khôi phục job {jid} đang dở ở bước render...")
+                    asyncio.create_task(pipeline._render(jid))
+    except Exception as e:
+        print(f"[recovery] Lỗi kiểm tra job dở dang: {e}")
+
+
 @app.on_event("startup")
 async def on_startup():
     await jobs_store.init_db()
+    asyncio.create_task(_recover_stalled_jobs())
 
 
 @app.get("/api/health")

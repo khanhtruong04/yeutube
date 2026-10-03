@@ -36,10 +36,32 @@ export default function HomePage() {
   useEffect(() => {
     api.getLanguages().then(setLanguages).catch(() => {});
     api.listJobs().then(setJobs).catch(() => {});
-    api.getFreeVoices().then(setFreeVoices).catch(() => {});
+    api
+      .getFreeVoices()
+      .then((voices) => {
+        setFreeVoices(voices);
+        // Tự động chọn giọng đầu tiên theo gender mặc định (female)
+        const firstFemale = voices.find((v) => v.gender === "female");
+        if (firstFemale) setSelectedVoiceId(firstFemale.voice_id);
+      })
+      .catch(() => {});
   }, []);
 
-  const filteredVoices = freeVoices.filter((v) => v.gender === voiceGender);
+  // Lọc giọng theo gender đang chọn
+  const femaleVoices = freeVoices.filter((v) => v.gender === "female");
+  const maleVoices = freeVoices.filter((v) => v.gender === "male");
+  const filteredVoices = voiceGender === "female" ? femaleVoices : maleVoices;
+
+  // Khi đổi gender, tự động chọn giọng đầu tiên của gender mới
+  const handleGenderChange = (g: "male" | "female") => {
+    setVoiceGender(g);
+    const voiceList = g === "female" ? femaleVoices : maleVoices;
+    if (voiceList.length > 0) {
+      setSelectedVoiceId(voiceList[0].voice_id);
+    } else {
+      setSelectedVoiceId("");
+    }
+  };
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -57,10 +79,10 @@ export default function HomePage() {
         target_resolution: resolution,
         upscale,
       };
-      // Include voice code if the user selected one
       if (selectedVoiceId) {
-        // @ts-ignore – the API accepts optional voice_code field
         payload.voice_code = selectedVoiceId;
+        const matched = freeVoices.find((v) => v.voice_id === selectedVoiceId);
+        payload.provider = matched?.provider || "nghitts";
       }
       const job = await api.createJob(payload);
       router.push(`/jobs/${job.id}`);
@@ -82,6 +104,7 @@ export default function HomePage() {
       <CookieStatusBanner />
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-5 rounded-xl border border-gray-200 p-6 dark:border-gray-800">
+        {/* Link video */}
         <div className="flex flex-col gap-1.5">
           <label htmlFor="video_url" className="text-sm font-medium">
             Link video
@@ -97,46 +120,91 @@ export default function HomePage() {
           />
         </div>
 
-        <div className="flex flex-col gap-1.5">
+        {/* Chọn giọng đọc theo giới tính */}
+        <div className="flex flex-col gap-3">
           <span className="text-sm font-medium">Giọng đọc</span>
-          <div className="flex gap-4">
+
+          {/* Toggle Nữ / Nam */}
+          <div className="flex gap-2">
             {(["female", "male"] as const).map((g) => (
-              <label key={g} className="flex items-center gap-2 text-sm">
-                <input
-                  type="radio"
-                  name="voice_gender"
-                  checked={voiceGender === g}
-                  onChange={() => setVoiceGender(g)}
-                />
-                {g === "female" ? "Nữ" : "Nam"}
-              </label>
+              <button
+                key={g}
+                type="button"
+                id={`gender-${g}`}
+                onClick={() => handleGenderChange(g)}
+                className={[
+                  "flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors",
+                  voiceGender === g
+                    ? "border-black bg-black text-white dark:border-white dark:bg-white dark:text-black"
+                    : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-transparent dark:text-gray-300 dark:hover:bg-gray-800",
+                ].join(" ")}
+              >
+                <span>{g === "female" ? "♀" : "♂"}</span>
+                <span>{g === "female" ? "Giọng nữ" : "Giọng nam"}</span>
+                {/* Badge số lượng */}
+                {(g === "female" ? femaleVoices : maleVoices).length > 0 && (
+                  <span
+                    className={[
+                      "rounded-full px-1.5 py-0.5 text-xs",
+                      voiceGender === g
+                        ? "bg-white/20 text-white dark:bg-black/20 dark:text-black"
+                        : "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400",
+                    ].join(" ")}
+                  >
+                    {(g === "female" ? femaleVoices : maleVoices).length}
+                  </span>
+                )}
+              </button>
             ))}
           </div>
+
+          {/* Danh sách giọng theo gender đang chọn */}
+          {filteredVoices.length > 0 ? (
+            <div className="flex flex-col gap-2 rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+              <span className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-400">
+                {voiceGender === "female" ? "Danh sách giọng nữ" : "Danh sách giọng nam"}
+              </span>
+              <div className="flex flex-col gap-1.5">
+                {filteredVoices.map((v) => (
+                  <label
+                    key={v.voice_id}
+                    htmlFor={`voice-${v.voice_id}`}
+                    className={[
+                      "flex cursor-pointer flex-col rounded-lg border px-3 py-2.5 transition-colors",
+                      selectedVoiceId === v.voice_id
+                        ? "border-black bg-black/5 dark:border-white dark:bg-white/5"
+                        : "border-transparent hover:border-gray-200 hover:bg-gray-50 dark:hover:border-gray-700 dark:hover:bg-gray-800/50",
+                    ].join(" ")}
+                  >
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="radio"
+                        id={`voice-${v.voice_id}`}
+                        name="freeVoice"
+                        value={v.voice_id}
+                        checked={selectedVoiceId === v.voice_id}
+                        onChange={() => setSelectedVoiceId(v.voice_id)}
+                        className="accent-black dark:accent-white"
+                      />
+                      <span className="text-sm font-medium">{v.model_name}</span>
+                    </div>
+                    {v.description && (
+                      <p className="ml-5 mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                        {v.description}
+                      </p>
+                    )}
+                  </label>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <p className="text-xs text-gray-400">
+              Đang tải danh sách giọng...
+            </p>
+          )}
         </div>
 
-        {/* List free voices for selected gender */}
-        {filteredVoices.length > 0 && (
-          <div className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium">
-              Lựa chọn giọng đọc ({voiceGender === "female" ? "Nữ" : "Nam"})
-            </span>
-            <ul className="space-y-2">
-              {filteredVoices.map((v) => (
-                <li key={v.voice_id} className="flex items-center gap-2">
-                  <input
-                    type="radio"
-                    name="freeVoice"
-                    value={v.voice_id}
-                    checked={selectedVoiceId === v.voice_id}
-                    onChange={() => setSelectedVoiceId(v.voice_id)}
-                  />
-                  <span>{v.model_name} ({v.voice_id})</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
+        {/* Độ phân giải */}
         <div className="flex flex-col gap-1.5">
           <span className="text-sm font-medium">Độ phân giải video</span>
           <div className="flex gap-4">
@@ -172,6 +240,7 @@ export default function HomePage() {
           </label>
         </div>
 
+        {/* Ngôn ngữ */}
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
             <label htmlFor="stt_language" className="text-sm font-medium">
@@ -211,6 +280,7 @@ export default function HomePage() {
           </div>
         </div>
 
+        {/* Âm lượng */}
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
             <label htmlFor="volume_goc" className="text-sm font-medium">

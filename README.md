@@ -241,6 +241,40 @@ Tool tự đọc `.env` để phát hiện provider đang có, tự chọn giọ
 | `OPENAI_API_KEY` | OpenAI |
 | (không có key) | OmniVoice (server LAN) |
 
+### Ngữ điệu khi đọc
+
+Giọng đọc không đọc đều một mạch từ đầu tới cuối nữa. Mọi bản dub — cả web app lẫn `/voice-over` — đều đi qua `backend/prosody.py`:
+
+| Trong kịch bản | Máy đọc thế nào |
+|---|---|
+| Liên từ / đưa đẩy đầu vế: *Tuy nhiên, Nói chung là, Thật ra thì, Và rồi…* | đọc lướt nhanh hơn ~20%, dính liền vào vế sau |
+| Dấu phẩy | ngắt ngắn (~0.2s) |
+| Dấu chấm / chấm than / chấm hỏi | ngắt dài hơn (~0.45–0.5s) |
+| `…` , xuống dòng, hết đoạn | ngắt dài nhất (0.6–0.75s) |
+| `**chữ in đậm**` (hoặc `__…__`, `<b>…</b>`) | nhấn mạnh: chậm lại, to hơn 2dB, có nhịp lấy đà trước/sau |
+| `【DỪNG 2 GIÂY】`, `(dừng 3 giây...)`, `[pause 2s]`, `(im lặng 1.5 giây)` | **im hẳn** đúng số giây đó, và dòng chỉ dẫn không bị đọc lên |
+
+Ngoặc đơn chứa nội dung thật — `(chưa gồm thuế)` — vẫn được đọc bình thường, chỉ ngoặc nào là chỉ dẫn dừng mới bị bóc ra.
+
+Đọc thẳng một kịch bản viết tay thành mp3:
+
+```bash
+# Windows
+backend\.venv\Scripts\python -m backend speak kichban.md -o dub.mp3
+# macOS/Linux
+backend/.venv/bin/python3 -m backend speak kichban.md -o dub.mp3
+
+# Xem trước máy sẽ ngắt/nhấn ở đâu, chưa gọi TTS
+... -m backend speak kichban.md --dry-run
+
+# Kịch bản đã có sẵn dạng transcript
+... -m backend speak downloads/<video-folder>/transcript-vi.json -o dub_vi.mp3
+```
+
+Tinh chỉnh: `--pause-scale 0.8` rút ngắn mọi khoảng nghỉ, `--max-pause 1.0` chặn trần, `--flat-connectives` tắt phần tách liên từ đọc lướt nếu nghe rời rạc.
+
+> Trong web app, khoảng nghỉ bị ghì lại (`pause_scale=0.7`, trần 0.8s) vì mỗi câu phải nằm gọn trong đúng khung thời gian gốc của nó trên hình.
+
 ---
 
 ## /douyin-crawler
@@ -272,7 +306,8 @@ downloads/<platform>/<video-title>__<id>/
   ├── transcript-vi.json  ← bản dịch tiếng Việt
   ├── subtitle_vi.srt     ← subtitle tiếng Việt
   ├── dub_vi.mp3          ← audio TTS
-  └── output_vi.mp4       ← video hoàn chỉnh
+  ├── output_vi.mp4       ← video hoàn chỉnh
+  └── thumbnail.jpg       ← ảnh khung hình đầu tiên của video hoàn chỉnh (job web)
 ```
 
 Job tạo từ **web app** dùng cùng bộ file trên nhưng lưu tại `downloads/web/<job_id>/` (Douyin có thêm 1 cấp folder con `<author>__<title>__<id>/` bên trong, do dùng chung crawler với CLI).

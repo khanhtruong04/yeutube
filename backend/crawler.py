@@ -1,10 +1,24 @@
 """
 Douyin crawler: Playwright intercept XHR/fetch, tìm aweme_list trong response.
 """
+import asyncio
 import json
 import re
+import sys
 from typing import AsyncGenerator
 from urllib.parse import urlparse, parse_qs
+
+# Playwright dùng asyncio.create_subprocess_exec để khởi động chromium.
+# Trên Windows, lệnh đó chỉ chạy được với ProactorEventLoop, không dùng được
+# SelectorEventLoop (mặc định khi uvicorn --reload). Ép policy ở đây đảm bảo
+# mọi event loop được tạo ra sau khi import module này đều dùng Proactor.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from playwright.async_api import async_playwright, Response
 from rich.console import Console
@@ -12,6 +26,9 @@ from rich.console import Console
 console = Console()
 
 JINGXUAN_URL = "https://www.douyin.com/jingxuan"
+
+# Số giây tối đa chờ trang gọi API chi tiết trong crawl_single_url.
+_SINGLE_URL_TIMEOUT = 25
 
 _BROWSER_ARGS = [
     "--no-sandbox",
@@ -50,15 +67,20 @@ def _find_aweme_list(data) -> list:
     return []
 
 
-def _get_download_url(video: dict) -> str | None:
+def _get_download_urls(video: dict) -> list[str]:
+    """Mọi link tải được của video, thứ tự ưu tiên giảm dần.
+
+    Trả về cả danh sách chứ không chỉ link đầu: Douyin có nhiều CDN cho cùng một
+    video và không phải cái nào cũng cho tải — host `v3-web-prime` chẳng hạn trả
+    403 cho mọi request ngoài trình duyệt, trong khi link khác của chính video đó
+    lại tải bình thường."""
+    urls: list[str] = []
     for key in ("play_addr", "play_addr_h264", "download_addr", "play_addr_lowbr"):
-        addr = video.get(key) or {}
-        urls = addr.get("url_list") or []
-        if urls:
-            url = urls[0]
+        for url in (video.get(key) or {}).get("url_list") or []:
             url = re.sub(r"[?&](logo_name|watermark|wm_url)[^&]*", "", url)
-            return url
-    return None
+            if url not in urls:
+                urls.append(url)
+    return urls
 
 
 def _parse_aweme(item: dict) -> dict | None:
@@ -67,14 +89,15 @@ def _parse_aweme(item: dict) -> dict | None:
         return None
     desc = (item.get("desc") or "").strip() or f"video_{aweme_id}"
     author_name = (item.get("author") or {}).get("nickname") or "unknown"
-    download_url = _get_download_url(item.get("video") or {})
-    if not download_url:
+    download_urls = _get_download_urls(item.get("video") or {})
+    if not download_urls:
         return None
     return {
         "aweme_id": aweme_id,
         "title": desc[:100],
         "author": author_name,
-        "download_url": download_url,
+        "download_url": download_urls[0],
+        "download_urls": download_urls,
     }
 
 
@@ -139,7 +162,42 @@ async def _make_context(p, headless: bool, cookies_file: str | None):
     return browser, context
 
 
-async def _crawl(
+async def _run_in_proactor(async_fn, *args, **kwargs):
+    """Trên Windows, khi Uvicorn chạy với --reload (hoặc khi event loop hiện tại là
+    SelectorEventLoop), Playwright sẽ crash với NotImplementedError vì
+    SelectorEventLoop không hỗ trợ subprocess.
+    Hàm này tự động chuyển việc chạy Playwright sang một worker thread riêng với
+    ProactorEventLoop, đảm bảo tương thích 100% dù server khởi động bằng lệnh nào.
+    """
+    if sys.platform != "win32":
+        return await async_fn(*args, **kwargs)
+
+    current_loop = asyncio.get_running_loop()
+    if isinstance(current_loop, getattr(asyncio, "ProactorEventLoop", ())):
+        return await async_fn(*args, **kwargs)
+
+    def in_thread():
+        proactor_loop = asyncio.ProactorEventLoop()
+        asyncio.set_event_loop(proactor_loop)
+        try:
+            return proactor_loop.run_until_complete(async_fn(*args, **kwargs))
+        finally:
+            try:
+                pending = asyncio.all_tasks(proactor_loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    proactor_loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
+            except Exception:
+                pass
+            proactor_loop.close()
+
+    return await asyncio.to_thread(in_thread)
+
+
+async def _crawl_impl(
     start_url: str,
     max_videos: int,
     scroll_count: int,
@@ -212,6 +270,25 @@ async def _crawl(
     return list(collected.values())[:max_videos]
 
 
+async def _crawl(
+    start_url: str,
+    max_videos: int,
+    scroll_count: int,
+    headless: bool,
+    cookies_file: str | None,
+    stop_when_no_new: int = 6,
+) -> list[dict]:
+    return await _run_in_proactor(
+        _crawl_impl,
+        start_url,
+        max_videos,
+        scroll_count,
+        headless,
+        cookies_file,
+        stop_when_no_new,
+    )
+
+
 async def crawl_jingxuan(
     max_videos: int = 50,
     scroll_count: int = 15,
@@ -234,7 +311,7 @@ async def crawl_user_profile(
         yield v
 
 
-async def crawl_single_url(
+async def _crawl_single_url_impl(
     url: str,
     headless: bool = True,
     cookies_file: str | None = None,
@@ -281,9 +358,30 @@ async def crawl_single_url(
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         except Exception:
             pass
-        await page.wait_for_timeout(5000)
+
+        # Chờ đến khi bắt được video rồi mới đóng, thay vì ngủ cứng 5 giây:
+        # response API chi tiết có khi về chậm hơn thế (mạng chậm, trang nặng)
+        # và lúc đó hàm trả về tay không dù trang vẫn đang tải bình thường.
+        for _ in range(_SINGLE_URL_TIMEOUT):
+            if collected.get(modal_id) if modal_id else collected:
+                break
+            await page.wait_for_timeout(1000)
         await browser.close()
 
     if modal_id and modal_id in collected:
         return collected[modal_id]
     return next(iter(collected.values()), None)
+
+
+async def crawl_single_url(
+    url: str,
+    headless: bool = True,
+    cookies_file: str | None = None,
+) -> dict | None:
+    return await _run_in_proactor(
+        _crawl_single_url_impl,
+        url=url,
+        headless=headless,
+        cookies_file=cookies_file,
+    )
+

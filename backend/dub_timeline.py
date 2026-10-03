@@ -3,15 +3,17 @@ trong video bằng adelay+amix — thay vì đọc liền một mạch từ đ�
 kéo giãn/nén (atempo) cho vừa tổng thời lượng, khiến câu nói lệch dần khỏi
 đúng lúc nhân vật nói câu đó trên hình.
 
-Mỗi câu: TTS riêng -> nếu dài hơn khung thời gian (end-start) gốc của câu đó
-thì atempo nén lại cho vừa -> đặt đúng vào mốc start bằng adelay -> amix tất
-cả lại thành 1 track dài bằng video_duration.
+Mỗi câu: đọc theo ngữ điệu (`prosody.render`: lướt qua liên từ, ngắt ở dấu câu,
+nhấn chữ in đậm, im hẳn ở chỗ kịch bản ghi 【DỪNG n GIÂY】) -> nếu dài hơn khung
+thời gian (end-start) gốc của câu đó thì atempo nén lại cho vừa -> đặt đúng vào
+mốc start bằng adelay -> amix tất cả lại thành 1 track dài bằng video_duration.
 """
 import asyncio
 import re
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from . import prosody
 from .proc_util import run_command
 from .voices import registry
 
@@ -27,6 +29,13 @@ _MAX_FAIL_RATIO = 0.15
 
 # Text chỉ toàn dấu câu/ký hiệu chắc chắn làm TTS lỗi -> lọc bỏ từ đầu.
 _SPEAKABLE = re.compile(r"[0-9A-Za-zÀ-ɏḀ-ỿ一-鿿]")
+
+# Ngữ điệu ở đây phải ghì lại so với khi đọc kịch bản rời: mỗi câu chỉ có đúng
+# khung thời gian gốc của nó trên hình, nghỉ thêm bao nhiêu thì phần đọc bị
+# atempo nén lại bấy nhiêu cho vừa khung — nghỉ thoải mái thì giọng hoá ra nói
+# nhanh như chạy.
+_PAUSE_SCALE = 0.7
+_MAX_PAUSE = 0.8
 
 
 def _is_speakable(text: str) -> bool:
@@ -102,32 +111,59 @@ async def synthesize_timeline(
     # track — registry.synthesize có fallback provider, nếu để nó tự chọn lại ở
     # từng câu thì giọng có thể đổi giữa chừng. Thử vài câu đầu phòng khi câu
     # đầu tiên lỗi.
-    locked_provider: str | None = None
-    locked_voice: str | None = None
+    locked: dict[str, str] = {}
     probe_error: Exception | None = None
+
+    async def probe_tts(text: str, out_path: str) -> None:
+        """Mẩu đầu tiên để registry tự dò provider chạy được, các mẩu sau bám
+        theo đúng provider/voice đó."""
+        if locked:
+            await registry.run_tts(
+                locked["provider"], text, voice_code=locked["voice_code"],
+                speed=speed, output=out_path, log=log,
+            )
+            return
+        result = await registry.synthesize(
+            text, gender=gender, provider=provider, voice_code=voice_code,
+            speed=speed, output=out_path, log=log,
+        )
+        locked.update(provider=result["provider"], voice_code=result["voice_code"])
+
     for i, seg in items[:3]:
         raw_p = str(seg_dir / f"{i:04d}_raw.mp3")
         fitted_p = str(seg_dir / f"{i:04d}_fit.mp3")
         try:
-            result = await registry.synthesize(
-                seg["text"], gender=gender, provider=provider, voice_code=voice_code,
-                speed=speed, output=raw_p, log=log,
+            # use_cache=False: chạy lại job mà lấy hết từ cache thì không lần nào
+            # gọi tới engine, không biết được provider nào đang sống để khoá.
+            await prosody.render(
+                seg["text"], tts=probe_tts, work_dir=seg_dir / f"{i:04d}_prosody",
+                output=raw_p, pause_scale=_PAUSE_SCALE, max_pause=_MAX_PAUSE,
+                use_cache=False, log=log,
             )
             await _fit_segment(raw_p, fitted_p, max(0.1, seg["end"] - seg["start"]))
         except Exception as e:
             probe_error = e
             _log(f"[dub_timeline] đoạn {i} lỗi khi dò provider: {str(e)[:120]}")
             continue
-        locked_provider, locked_voice = result["provider"], result["voice_code"]
         fitted_paths[i] = fitted_p
         await report()
         break
+
+    locked_provider = locked.get("provider")
+    locked_voice = locked.get("voice_code")
 
     if locked_provider is None:
         raise RuntimeError(f"Không tổng hợp được giọng đọc cho đoạn nào. Lỗi cuối: {probe_error}")
 
     sem = asyncio.Semaphore(MAX_CONCURRENCY)
     failures: list[tuple[int, Exception]] = []
+
+    async def locked_tts(text: str, out_path: str) -> None:
+        await asyncio.sleep(_STAGGER_DELAY)
+        await registry.run_tts(
+            locked_provider, text, voice_code=locked_voice,
+            speed=speed, output=out_path, log=log,
+        )
 
     async def synth_one(i: int, seg: dict) -> None:
         raw_p = str(seg_dir / f"{i:04d}_raw.mp3")
@@ -137,10 +173,11 @@ async def synthesize_timeline(
                 fitted_paths[i] = fitted_p
                 return
             async with sem:
-                await asyncio.sleep(_STAGGER_DELAY)
-                await registry.run_tts(
-                    locked_provider, seg["text"], voice_code=locked_voice,
-                    speed=speed, output=raw_p, log=log,
+                # concurrency=1: các mẩu trong cùng 1 câu đọc lần lượt, giữ số
+                # lệnh TTS chạy song song đúng bằng MAX_CONCURRENCY như trước.
+                await prosody.render(
+                    seg["text"], tts=locked_tts, work_dir=seg_dir / f"{i:04d}_prosody",
+                    output=raw_p, pause_scale=_PAUSE_SCALE, max_pause=_MAX_PAUSE, log=log,
                 )
                 await _fit_segment(raw_p, fitted_p, max(0.1, seg["end"] - seg["start"]))
             fitted_paths[i] = fitted_p

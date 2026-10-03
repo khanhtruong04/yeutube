@@ -27,7 +27,7 @@ metadata:
 **Tuyệt đối không tự viết inline Python để transcribe hay xử lý file.**
 Chỉ được phép dùng đúng các lệnh CLI sau đây:
 - Transcribe: `backend/.venv/bin/python3 -m backend transcribe "$FOLDER/index.mp4"`
-- TTS: dùng đúng đoạn code ở Bước 4
+- TTS: `backend/.venv/bin/python3 -m backend speak ...` — dùng đúng lệnh ở Bước 4
 
 Lý do: CLI đã được cấu hình đúng (`word_timestamps=False`, output format chuẩn). Tự viết code sẽ tạo ra file sai format (có `words`, sai encoding, v.v.).
 
@@ -156,53 +156,35 @@ Cú pháp đầy đủ skill chấp nhận:
 /voice-over <path> --provider omnivoice --voice <voice_code>
 ```
 
-### Bước 4 — TTS
+### Bước 4 — TTS (đọc có ngữ điệu)
 
-**Dùng đúng provider đã chọn ở Bước 3.1** — chỉ chạy 1 script tương ứng, không thử provider khác.
+**Dùng đúng provider đã chọn ở Bước 3.1** — chỉ chạy 1 lệnh, không thử provider khác.
 
-Script inline `-c` KHÔNG qua `__main__.py` nên phải tự `load_dotenv('.env')` để đọc key trong `.env` (vbee/elevenlabs/openai cần key; omnivoice không cần nhưng để vẫn vô hại). `cd "$(git rev-parse --show-toplevel)"` về đúng project root (nơi có `.env` + `backend/`).
+Lệnh `speak` đọc theo ngữ điệu chứ không đọc đều một mạch: lướt nhanh qua liên
+từ/đưa đẩy, ngắt ngắn ở dấu phẩy và ngắt dài hơn ở dấu chấm, nhấn mạnh chữ in
+đậm `**...**`, và **im hẳn** đúng số giây ở chỗ kịch bản ghi `【DỪNG 2 GIÂY】`
+hay `(dừng 3 giây...)` — bản thân dòng chỉ dẫn đó không bị đọc lên.
 
-**Vbee** (khi `.env` có `VBEE_TOKEN` + `VBEE_APP_ID`):
 ```bash
 cd "$(git rev-parse --show-toplevel)"
-backend/.venv/bin/python3 -c "
-import asyncio, json
-from pathlib import Path
-from dotenv import load_dotenv
-load_dotenv('.env')
-from backend.voices.vbee import run_tts
-
-async def main():
-    folder = Path('$FOLDER')
-    vi_text = json.loads((folder / 'transcript-vi.json').read_text())['text']
-    result = await run_tts(text=vi_text, voice_code='$VOICE_CODE',
-                           output=str(folder / 'dub_vi.mp3'), log=print)
-    print(f'TTS done: {result[\"bytes\"]:,} bytes, mode={result[\"mode\"]}')
-asyncio.run(main())
-"
+backend/.venv/bin/python3 -m backend speak "$FOLDER/transcript-vi.json" \
+  --provider "$PROVIDER" --voice "$VOICE_CODE" \
+  -o "$FOLDER/dub_vi.mp3"
 ```
 
-**OmniVoice** (khi `.env` không có key nào — dùng server LAN):
-```bash
-cd "$(git rev-parse --show-toplevel)"
-backend/.venv/bin/python3 -c "
-import asyncio, json
-from pathlib import Path
-from dotenv import load_dotenv
-load_dotenv('.env')
-from backend.voices.omnivoice import run_tts
+`-m backend` đi qua `__main__.py` nên `.env` được `load_dotenv` sẵn, không cần
+tự nạp key. `.json` thì lệnh tự lấy `segments[].text` (mỗi câu một dòng, giữ
+được chỗ ngắt giữa câu); truyền thẳng file `.md`/`.txt` nếu đọc kịch bản viết tay.
 
-async def main():
-    folder = Path('$FOLDER')
-    vi_text = json.loads((folder / 'transcript-vi.json').read_text())['text']
-    result = await run_tts(text=vi_text, voice_code='$VOICE_CODE',
-                           output=str(folder / 'dub_vi.mp3'), log=print)
-    print(f'TTS: {result[\"bytes\"]:,} bytes')
-asyncio.run(main())
-"
-```
+Muốn xem trước máy sẽ ngắt/nhấn ở đâu mà chưa gọi TTS: thêm `--dry-run`, nó in
+bảng từng mẩu kèm tốc độ và độ dài khoảng nghỉ.
 
-Timeout: 180 giây.
+Tinh chỉnh khi cần:
+- `--pause-scale 0.8` — rút ngắn toàn bộ khoảng nghỉ (dub bị dài hơn video).
+- `--max-pause 1.0` — chặn trần khoảng nghỉ.
+- `--flat-connectives` — tắt phần tách liên từ đọc lướt, nếu nghe rời rạc.
+
+Timeout: 300 giây (đọc từng mẩu nên nhiều lượt gọi hơn đọc một mạch).
 
 ### Bước 5 — Tạo file SRT subtitle
 

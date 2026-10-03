@@ -48,6 +48,23 @@ async def _duration(path: str) -> float | None:
         return None
 
 
+async def extract_thumbnail(video_path: str, output_path: str) -> None:
+    """Lấy khung hình ĐẦU TIÊN của video làm ảnh thumbnail.
+
+    Đặt -ss 0 trước -i để tua tới đầu file, kèm -frames:v 1 lấy đúng 1 khung.
+    -q:v 2 là mức chất lượng JPEG cao (thang 2-31, càng nhỏ càng nét)."""
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    code, _, stderr = await run_command([
+        "ffmpeg", "-y", "-ss", "0", "-i", video_path,
+        "-frames:v", "1", "-q:v", "2",
+        output_path,
+    ])
+    if code != 0:
+        raise RuntimeError(
+            f"ffmpeg tạo thumbnail lỗi (code {code}): {stderr.decode(errors='replace')[-1000:]}"
+        )
+
+
 async def probe_video(path: str) -> dict:
     """Trả về {width, height, duration} của file video qua ffprobe."""
     code, stdout, stderr = await run_command([

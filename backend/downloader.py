@@ -22,7 +22,7 @@ from .store import upsert_download
 
 console = Console()
 
-_HEADERS = {
+DOUYIN_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -92,7 +92,7 @@ async def _download_one(
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 async with session.get(
-                    url, headers=_HEADERS,
+                    url, headers=DOUYIN_HEADERS,
                     timeout=aiohttp.ClientTimeout(total=180, sock_read=60),
                 ) as resp:
                     if resp.status not in (200, 206):

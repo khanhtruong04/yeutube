@@ -1,12 +1,17 @@
 import asyncio
+import json
+import sys
+from pathlib import Path
 
 import click
 from rich.console import Console
 from rich.table import Table
 
+from . import prosody
 from .crawler import crawl_jingxuan, crawl_user_profile, crawl_single_url
 from .downloader import download_videos
 from .transcribe import transcribe_video
+from .voices import registry
 
 console = Console()
 
@@ -164,3 +169,96 @@ def transcribe(video_path, model, language, aweme_id):
             console.print("[red]Chưa cài faster-whisper.[/red]\nChạy: [yellow]pip install faster-whisper[/yellow]")
 
     asyncio.run(run())
+
+
+@cli.command()
+@click.argument("source")
+@click.option("--out", "-o", "output", default=None, help="File mp3 xuất ra (mặc định: cạnh file kịch bản)")
+@click.option("--provider", default=None,
+              type=click.Choice(["vbee", "elevenlabs", "omnivoice", "edgetts"], case_sensitive=False))
+@click.option("--voice", "voice_code", default=None)
+@click.option("--gender", default=None, help="male | female — dùng khi không chỉ định --voice")
+@click.option("--speed", default=None, type=float, help="Tốc độ nền của giọng (vbee/omnivoice)")
+@click.option("--pause-scale", default=1.0, show_default=True, help="Nhân toàn bộ khoảng nghỉ")
+@click.option("--max-pause", default=None, type=float, help="Trần khoảng nghỉ, giây")
+@click.option("--flat-connectives", is_flag=True, help="Không tách liên từ ra đọc lướt")
+@click.option("--concurrency", default=2, show_default=True)
+@click.option("--dry-run", is_flag=True, help="Chỉ in bảng ngữ điệu, không gọi TTS")
+def speak(source, output, provider, voice_code, gender, speed, pause_scale,
+          max_pause, flat_connectives, concurrency, dry_run):
+    """Đọc kịch bản thành mp3 CÓ NGỮ ĐIỆU (SOURCE là file .txt/.md/.json, hoặc '-' cho stdin).
+
+    Lướt qua liên từ/đưa đẩy, ngắt ở dấu phẩy - dấu chấm, nhấn mạnh chữ in đậm
+    (**...**), im hẳn ở chỗ ghi 【DỪNG 2 GIÂY】 hay (dừng 3 giây...).
+    """
+    console.rule("[bold cyan]Đọc kịch bản theo ngữ điệu[/bold cyan]")
+
+    if source == "-":
+        text = sys.stdin.read()
+        out_path = Path(output or "speak.mp3")
+    else:
+        src = Path(source)
+        if not src.is_file():
+            console.print(f"[red]Không thấy file kịch bản: {src}[/red]")
+            raise SystemExit(1)
+        raw = src.read_text(encoding="utf-8")
+        if src.suffix.lower() == ".json":
+            # transcript-vi.json: nối các segment lại, mỗi câu một dòng — xuống
+            # dòng chính là nhịp ngắt giữa câu, chứ `text` top-level đã bị nối
+            # dính liền nên mất hết chỗ ngắt.
+            data = json.loads(raw)
+            segments = data.get("segments") or []
+            raw = "\n".join(s["text"].strip() for s in segments if s.get("text", "").strip()) \
+                or data.get("text", "")
+        text = raw
+        out_path = Path(output) if output else src.with_suffix(".mp3")
+
+    chunks, lead = prosody.parse(
+        text, fast_connectives=not flat_connectives,
+        pause_scale=pause_scale, max_pause=max_pause,
+    )
+    if not chunks:
+        console.print("[red]Kịch bản không có nội dung nào đọc được.[/red]")
+        raise SystemExit(1)
+
+    if dry_run:
+        table = Table(title=f"{len(chunks)} mẩu — nghỉ tổng {sum(c.pause_after for c in chunks) + lead:.1f}s")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Tốc độ", width=7)
+        table.add_column("Nhấn", width=6)
+        table.add_column("Nghỉ sau", width=9)
+        table.add_column("Nội dung", max_width=70)
+        for i, c in enumerate(chunks, 1):
+            table.add_row(str(i), f"{c.speed:.2f}x",
+                          f"+{c.gain_db:.0f}dB" if c.gain_db else "",
+                          f"{c.pause_after:.2f}s", c.text)
+        console.print(table)
+        return
+
+    locked: dict[str, str] = {}
+
+    async def tts(chunk_text: str, out_file: str) -> None:
+        if locked:
+            await registry.run_tts(locked["provider"], chunk_text, voice_code=locked["voice_code"],
+                                   speed=speed, output=out_file, log=None)
+            return
+        result = await registry.synthesize(chunk_text, gender=gender, provider=provider,
+                                           voice_code=voice_code, speed=speed, output=out_file, log=None)
+        locked.update(provider=result["provider"], voice_code=result["voice_code"])
+
+    async def run():
+        result = await prosody.render(
+            text, tts=tts, work_dir=out_path.parent / f".prosody_{out_path.stem}",
+            output=str(out_path), pause_scale=pause_scale, max_pause=max_pause,
+            fast_connectives=not flat_connectives, concurrency=concurrency, log=print,
+        )
+        console.print(
+            f"[green]✓[/green] {out_path} — {result['bytes']:,} bytes, "
+            f"{result['chunks']} mẩu, giọng {locked.get('provider')}/{locked.get('voice_code')}"
+        )
+
+    try:
+        asyncio.run(run())
+    except (RuntimeError, ValueError, FileNotFoundError) as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(1)

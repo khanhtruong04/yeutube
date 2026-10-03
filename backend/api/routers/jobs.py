@@ -1,9 +1,10 @@
 import json
+from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from ... import jobs_store
-from ..pipeline import maybe_render, run_stage1_download
+from ..pipeline import maybe_render, run_prep, run_stage1_download
 from ..schemas import JobCreate, JobOut, SubmitLayout, SubmitMasks
 
 router = APIRouter(tags=["jobs"])
@@ -27,6 +28,41 @@ async def get_job(job_id: str):
     row = await jobs_store.get_job(job_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Job không tồn tại")
+    return JobOut.from_row(row)
+
+
+@router.post("/jobs/{job_id}/retry", response_model=JobOut)
+async def retry_job(job_id: str, background_tasks: BackgroundTasks):
+    """Chạy lại job lỗi, tiếp tục từ chỗ dở thay vì làm lại từ đầu.
+
+    Mọi thứ đã làm xong đều nằm trong folder job (video, transcript, từng đoạn
+    TTS) và các bước đều kiểm tra file có sẵn trước khi làm lại, nên chạy lại
+    chỉ tốn công cho phần còn thiếu — vd. 11 đoạn TTS hỏng giữa 71 đoạn."""
+    row = await jobs_store.get_job(job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job không tồn tại")
+    if row["status"] not in ("error", "waiting_prep", "rendering", "queued"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job đang ở trạng thái '{row['status']}', không thể chạy lại.",
+        )
+
+    if row["folder"] and (Path(row["folder"]) / "index.mp4").exists():
+        # Trả status về đúng bước user đang dang dở, vì lúc lỗi nó bị ghi đè
+        # thành 'error' và mất dấu.
+        if row["masks_json"] is None:
+            status = "awaiting_masks"
+        elif row["text_layout_json"] is None:
+            status = "awaiting_layout"
+        else:
+            status = "waiting_prep"
+        await jobs_store.update_job(job_id, status=status, prep_status="pending", error=None)
+        background_tasks.add_task(run_prep, job_id)
+    else:
+        await jobs_store.update_job(job_id, status="queued", prep_status="pending", error=None)
+        background_tasks.add_task(run_stage1_download, job_id)
+
+    row = await jobs_store.get_job(job_id)
     return JobOut.from_row(row)
 
 

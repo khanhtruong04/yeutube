@@ -99,6 +99,7 @@ class JobOut(BaseModel):
                     "video_url": f"{base}/output_vi.mp4",
                     "srt_url": f"{base}/subtitle_vi.srt",
                     "dub_audio_url": f"{base}/dub_vi.mp3",
+                    "thumbnail_url": f"{base}/thumbnail.jpg",
                 }
 
         masks = json.loads(row.get("masks_json") or "[]")

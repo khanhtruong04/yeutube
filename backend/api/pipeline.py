@@ -19,9 +19,9 @@ Job có 2 trục trạng thái độc lập:
 Chỉ gọi lại engine có sẵn (transcribe) + module mới (translate/mixer/registry/
 ytdlp_download/mask_overlay/subtitle_burn/render). Không sửa engine gốc.
 
-Tải video dùng yt-dlp cho MỌI nền tảng, kể cả Douyin (xem cookies_util.py) —
-Douyin trả 403 cho Playwright crawler khi bị điều khiển tự động, kể cả cookies
-hợp lệ; crawler.py vẫn dùng tốt cho CLI crawl feed/profile (endpoint khác).
+Tải video dùng yt-dlp cho MỌI nền tảng. Riêng Douyin hiện yt-dlp hay thất bại ở
+tầng chữ ký chống-bot ("Fresh cookies ... are needed", không phải do cookies hỏng)
+nên có đường dự phòng qua trình duyệt thật — xem douyin_fallback.py.
 """
 import asyncio
 import json
@@ -30,8 +30,9 @@ from pathlib import Path
 
 from .. import jobs_store
 from ..cookies_util import netscape_cookie_file
+from ..douyin_fallback import download_douyin_via_browser, is_douyin
 from ..dub_timeline import synthesize_timeline
-from ..mixer import generate_srt, probe_video
+from ..mixer import extract_thumbnail, generate_srt, probe_video
 from ..render import render_final
 from ..subtitle_burn import build_ass
 from ..transcribe import transcribe_video
@@ -71,12 +72,20 @@ async def run_stage1_download(job_id: str) -> None:
 
     try:
         await jobs_store.update_job(job_id, status="downloading")
-        info = await download_via_ytdlp(
-            job["video_url"],
-            job_dir,
-            cookiefile=netscape_cookie_file(),
-            max_res=job.get("target_resolution") or 1080,
-        )
+        if is_douyin(job["video_url"]):
+            # Douyin đi thẳng đường trình duyệt, không thử yt-dlp trước: yt-dlp
+            # bị chặn ở tầng chữ ký chống-bot nên hỏng 100% (xem douyin_fallback.py),
+            # thử vẫn mất 24 giây và in ra một loạt lỗi đỏ "Fresh cookies" dễ bị
+            # hiểu nhầm thành hỏng cookie.
+            info = await download_douyin_via_browser(job["video_url"], job_dir, log=print)
+        else:
+            info = await download_via_ytdlp(
+                job["video_url"],
+                job_dir,
+                cookiefile=netscape_cookie_file(),
+                max_res=job.get("target_resolution") or 1080,
+                log=print,
+            )
         video_path = job_dir / "index.mp4"
         if not video_path.exists():
             raise RuntimeError(f"Không tìm thấy video sau khi tải: {video_path}")
@@ -109,15 +118,17 @@ async def run_prep(job_id: str) -> None:
     folder = Path(job["folder"])
 
     try:
-        await jobs_store.update_job(job_id, prep_status="transcribing")
-        await transcribe_video(
-            video_path=str(folder / "index.mp4"),
-            model=job["whisper_model"] or "base",
-            language=job["stt_language"],
-            aweme_id=job_id,
-            update_index=False,  # job web track trong jobs.db, không ghi index.csv của CLI
-        )
-        transcript = json.loads((folder / "transcript.json").read_text(encoding="utf-8"))
+        transcript_path = folder / "transcript.json"
+        if not transcript_path.exists():
+            await jobs_store.update_job(job_id, prep_status="transcribing")
+            await transcribe_video(
+                video_path=str(folder / "index.mp4"),
+                model=job["whisper_model"] or "base",
+                language=job["stt_language"],
+                aweme_id=job_id,
+                update_index=False,  # job web track trong jobs.db, không ghi index.csv của CLI
+            )
+        transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
 
         await jobs_store.update_job(job_id, prep_status="translating")
         transcript_vi_path = folder / "transcript-vi.json"
@@ -133,6 +144,20 @@ async def run_prep(job_id: str) -> None:
 
         # .srt rời không phụ thuộc gì vào layout -> xuất luôn ở đây.
         generate_srt(transcript_vi, str(folder / "subtitle_vi.srt"))
+
+        # Luôn kèm bản .srt tiếng Anh, tái dùng bản dịch vi nếu target_language
+        # đã là "en" để khỏi tốn thêm 1 lượt gọi LLM.
+        transcript_en_path = folder / "transcript-en.json"
+        if (job["target_language"] or "vi") == "en":
+            transcript_en = transcript_vi
+        elif transcript_en_path.exists():
+            transcript_en = json.loads(transcript_en_path.read_text(encoding="utf-8"))
+        else:
+            transcript_en = await translate_transcript(transcript, target_language="en")
+            transcript_en_path.write_text(
+                json.dumps(transcript_en, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        generate_srt(transcript_en, str(folder / "subtitle_en.srt"))
 
         segments = transcript_vi.get("segments", [])
         await jobs_store.update_job(
@@ -179,6 +204,8 @@ async def _render(job_id: str) -> None:
         return
     folder = Path(job["folder"])
 
+    output_path = folder / "output_vi.mp4"
+
     try:
         transcript_vi = json.loads((folder / "transcript-vi.json").read_text(encoding="utf-8"))
 
@@ -196,12 +223,16 @@ async def _render(job_id: str) -> None:
             masks=masks,
             video_w=job["video_width"],
             video_h=job["video_height"],
-            output_path=str(folder / "output_vi.mp4"),
+            output_path=str(output_path),
             volume_goc=job["volume_goc"],
             volume_dub=job["volume_dub"],
             fit_dub_to_video=False,  # dub_timeline đã canh đúng video_duration sẵn
             upscale_to=(job.get("target_resolution") or 1080) if job.get("upscale") else None,
         )
+
+        # Lấy từ video kết quả (không phải video gốc) để thumbnail phản ánh đúng
+        # thứ người xem thấy: đã che vùng, đã phóng to nếu có bật.
+        await extract_thumbnail(str(output_path), str(folder / "thumbnail.jpg"))
 
         await jobs_store.update_job(job_id, status="done")
     except Exception as e:
