@@ -90,7 +90,10 @@ async def _translate_texts(
 
     Nếu model trả sai số lượng thì chia đôi rồi dịch lại từng nửa — chia tới mức
     1 đoạn thì chắc chắn khớp. Đoạn lẻ cuối cùng nếu vẫn hỏng thì giữ nguyên bản
-    gốc (thà sót 1 câu chưa dịch còn hơn hỏng cả job)."""
+    gốc (thà sót 1 câu chưa dịch còn hơn hỏng cả job).
+    
+    Ngoại lệ: lỗi thanh toán (402/credits hết) luôn được raise ngay lập tức — không
+    nên im lặng trả về text gốc trong trường hợp này vì toàn bộ bản dịch sẽ sai."""
     if not texts:
         return []
 
@@ -98,7 +101,11 @@ async def _translate_texts(
         result = await _call_llm(client, texts, context, target_language, model, headers)
         if len(result) == len(texts):
             return result
-    except RuntimeError:
+    except RuntimeError as e:
+        msg = str(e)
+        # Lỗi thanh toán/quota — raise ngay, không fallback vì toàn batch đều hỏng
+        if any(code in msg for code in ("402", "credits", "balance", "payment", "quota", "billing")):
+            raise
         if len(texts) == 1:
             return [texts[0]]
         result = None

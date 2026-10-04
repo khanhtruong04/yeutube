@@ -122,6 +122,11 @@ export function fileUrl(path: string): string {
   return `${apiBase()}${path}`;
 }
 
+export function voicePreviewUrl(voiceId: string, provider = "nghitts"): string {
+  const qs = new URLSearchParams({ voice_id: voiceId, provider });
+  return `${apiBase()}/api/voices/preview?${qs.toString()}`;
+}
+
 export const api = {
   getProviders: () => request<Provider[]>("/api/providers"),
   getLanguages: () => request<Language[]>("/api/languages"),

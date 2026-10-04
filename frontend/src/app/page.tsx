@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   api,
@@ -13,6 +13,7 @@ import {
   type Language,
   type JobCreatePayload,
   type FreeVoice,
+  voicePreviewUrl,
 } from "@/lib/api";
 import CookieStatusBanner from "@/components/CookieStatusBanner";
 
@@ -32,6 +33,42 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [freeVoices, setFreeVoices] = useState<FreeVoice[]>([]);
   const [selectedVoiceId, setSelectedVoiceId] = useState<string>("");
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  // voice_id đang tải/đang phát nghe thử
+  const [previewLoading, setPreviewLoading] = useState<string | null>(null);
+  const [previewPlaying, setPreviewPlaying] = useState<string | null>(null);
+
+  function stopPreview() {
+    audioRef.current?.pause();
+    audioRef.current = null;
+    setPreviewLoading(null);
+    setPreviewPlaying(null);
+  }
+
+  function togglePreview(v: FreeVoice) {
+    const wasThis = previewPlaying === v.voice_id || previewLoading === v.voice_id;
+    stopPreview();
+    if (wasThis) return;
+    const audio = new Audio(voicePreviewUrl(v.voice_id, v.provider || "nghitts"));
+    audioRef.current = audio;
+    setPreviewLoading(v.voice_id);
+    audio.onplaying = () => {
+      setPreviewLoading(null);
+      setPreviewPlaying(v.voice_id);
+    };
+    audio.onended = () => {
+      if (audioRef.current === audio) stopPreview();
+    };
+    audio.onerror = () => {
+      if (audioRef.current === audio) {
+        stopPreview();
+        setError(`Không nghe thử được giọng ${v.model_name}`);
+      }
+    };
+    audio.play().catch(() => {});
+  }
+
+  useEffect(() => () => audioRef.current?.pause(), []);
 
   useEffect(() => {
     api.getLanguages().then(setLanguages).catch(() => {});
@@ -187,6 +224,23 @@ export default function HomePage() {
                         className="accent-black dark:accent-white"
                       />
                       <span className="text-sm font-medium">{v.model_name}</span>
+                      <button
+                        type="button"
+                        id={`preview-${v.voice_id}`}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          togglePreview(v);
+                        }}
+                        title="Nghe thử giọng đọc"
+                        className="ml-auto flex shrink-0 items-center gap-1 rounded-full border border-gray-300 px-2.5 py-1 text-xs hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800"
+                      >
+                        {previewLoading === v.voice_id
+                          ? "⏳ Đang tạo..."
+                          : previewPlaying === v.voice_id
+                            ? "⏹ Dừng"
+                            : "▶ Nghe thử"}
+                      </button>
                     </div>
                     {v.description && (
                       <p className="ml-5 mt-0.5 text-xs text-gray-500 dark:text-gray-400">
