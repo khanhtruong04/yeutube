@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import {
   api,
+  batchApi,
   fileUrl,
   jobProgressPercent,
   prepProgressPercent,
@@ -20,19 +21,51 @@ const AWAITING_STATUSES = new Set(["awaiting_masks", "awaiting_layout"]);
 
 export default function JobPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const jobId = params.id;
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   // Tăng lên sau khi chạy lại job để vòng poll (đã dừng khi job lỗi) chạy lại.
   const [pollKey, setPollKey] = useState(0);
+  // Batch context — tổng số job trong batch (để hiện "Video X/N")
+  const [batchTotalJobs, setBatchTotalJobs] = useState<number | null>(null);
 
   async function refetch() {
     if (!jobId) return;
     try {
-      setJob(await api.getJob(jobId));
+      const j = await api.getJob(jobId);
+      setJob(j);
+      return j;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Không tải được job");
+    }
+  }
+
+  // Lấy tổng số job trong batch để hiện "Video X/N"
+  useEffect(() => {
+    if (!job?.batch_id) return;
+    batchApi.getBatch(job.batch_id)
+      .then((b) => setBatchTotalJobs(b.total_jobs))
+      .catch(() => {});
+  }, [job?.batch_id]);
+
+  /** Sau khi user submit masks/layout, tự navigate sang job tiếp theo trong batch
+   *  (nếu có), hoặc về trang batch nếu tất cả đã xong thao tác. */
+  async function afterSubmit() {
+    const j = await refetch();
+    if (!j?.batch_id) return; // job đơn lẻ — không navigate
+    try {
+      const next = await batchApi.getNextJob(j.batch_id);
+      if (!next.done && next.job_id && next.job_id !== jobId) {
+        router.push(`/jobs/${next.job_id}`);
+      } else if (next.done) {
+        // Tất cả job đã xong thao tác → về trang batch
+        router.push(`/batches/${j.batch_id}`);
+      }
+      // Nếu next.job_id === jobId (vẫn còn thao tác trên job này) → giữ nguyên
+    } catch {
+      // Lỗi gọi next-job → chỉ refetch
     }
   }
 
@@ -40,7 +73,12 @@ export default function JobPage() {
     setRetrying(true);
     setError(null);
     try {
-      setJob(await api.retryJob(jobId));
+      if (job?.batch_id) {
+        // Retry trong context batch — dùng endpoint riêng để điều chỉnh done_jobs
+        setJob(await batchApi.retryBatchJob(job.batch_id, jobId));
+      } else {
+        setJob(await api.retryJob(jobId));
+      }
       setPollKey((k) => k + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Không chạy lại được job");
@@ -76,9 +114,28 @@ export default function JobPage() {
 
   return (
     <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 py-10">
-      <a href="/" className="text-sm text-gray-500 hover:underline">
-        ← Tạo job mới
-      </a>
+      {/* Navigation header */}
+      <div className="flex items-center gap-3">
+        {job?.batch_id ? (
+          <>
+            <a
+              href={`/batches/${job.batch_id}`}
+              className="text-sm text-gray-500 hover:underline"
+            >
+              ← Quay về Batch
+            </a>
+            {job.batch_order !== null && batchTotalJobs !== null && (
+              <span className="rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+                Video {job.batch_order} / {batchTotalJobs}
+              </span>
+            )}
+          </>
+        ) : (
+          <a href="/" className="text-sm text-gray-500 hover:underline">
+            ← Tạo job mới
+          </a>
+        )}
+      </div>
 
       <CookieStatusBanner />
 
@@ -153,12 +210,26 @@ export default function JobPage() {
             )}
           </div>
 
-          {job.status === "awaiting_masks" && <MaskEditor job={job} onSubmitted={refetch} />}
-          {job.status === "awaiting_layout" && <LayoutEditor job={job} onSubmitted={refetch} />}
+          {job.status === "awaiting_masks" && (
+            <MaskEditor job={job} onSubmitted={afterSubmit} />
+          )}
+          {job.status === "awaiting_layout" && (
+            <LayoutEditor job={job} onSubmitted={afterSubmit} />
+          )}
 
           {job.status === "done" && job.result && (
             <div className="flex flex-col gap-4 rounded-xl border border-gray-200 p-5 dark:border-gray-800">
-              <h2 className="text-sm font-medium">Kết quả</h2>
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-medium">Kết quả</h2>
+                {job.batch_id && (
+                  <a
+                    href={`/batches/${job.batch_id}`}
+                    className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                  >
+                    Xem trang Batch →
+                  </a>
+                )}
+              </div>
               {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
               <video
                 controls

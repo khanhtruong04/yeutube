@@ -46,6 +46,11 @@ WEB_ROOT = PROJECT_ROOT / "downloads" / "web"
 # không có ai giữ có thể bị thu gom giữa chừng và dừng im lặng.
 _BG_TASKS: set[asyncio.Task] = set()
 
+# Giới hạn tối đa 2 tác vụ AI nặng (STT + Dịch + TTS) chạy đồng thời.
+# Ngoài giới hạn này các job tự xếp hàng chờ — tránh OOM khi batch 7 video
+# khởi động cùng lúc và théo nhau chạy Whisper + TTS song song hết.
+_PREP_SEM = asyncio.Semaphore(2)
+
 
 def _spawn(coro) -> None:
     task = asyncio.create_task(coro)
@@ -68,7 +73,11 @@ async def run_stage1_download(job_id: str) -> None:
     job = await jobs_store.get_job(job_id)
     if job is None:
         return
-    job_dir = WEB_ROOT / job_id
+    # Job thuộc batch: đặt tên video_<STT>_<id> để dễ nhận biết thứ tự trong downloads/web
+    if job.get("batch_id") and job.get("batch_order") is not None:
+        job_dir = WEB_ROOT / f"video_{int(job['batch_order']):02d}_{job_id}"
+    else:
+        job_dir = WEB_ROOT / job_id
 
     try:
         await jobs_store.update_job(job_id, status="downloading")
@@ -111,80 +120,83 @@ async def run_stage1_download(job_id: str) -> None:
 
 async def run_prep(job_id: str) -> None:
     """Toàn bộ phần máy làm: STT -> dịch -> TTS. Chạy song song với thao tác của
-    user, kết thúc bằng prep_status='ready' rồi thử khởi động render."""
-    job = await jobs_store.get_job(job_id)
-    if job is None:
-        return
-    folder = Path(job["folder"])
+    user, kết thúc bằng prep_status='ready' rồi thử khởi động render.
+    Dùng _PREP_SEM để giới hạn tối đa 2 tác vụ nặng chạy đồng thời — các job
+    còn lại tự xếp hàng chờ, tránh OOM khi batch 7 video khởi động cùng lúc."""
+    async with _PREP_SEM:
+        job = await jobs_store.get_job(job_id)
+        if job is None:
+            return
+        folder = Path(job["folder"])
 
-    try:
-        transcript_path = folder / "transcript.json"
-        if not transcript_path.exists():
-            await jobs_store.update_job(job_id, prep_status="transcribing")
-            await transcribe_video(
-                video_path=str(folder / "index.mp4"),
-                model=job["whisper_model"] or "base",
-                language=job["stt_language"],
-                aweme_id=job_id,
-                update_index=False,  # job web track trong jobs.db, không ghi index.csv của CLI
+        try:
+            transcript_path = folder / "transcript.json"
+            if not transcript_path.exists():
+                await jobs_store.update_job(job_id, prep_status="transcribing")
+                await transcribe_video(
+                    video_path=str(folder / "index.mp4"),
+                    model=job["whisper_model"] or "base",
+                    language=job["stt_language"],
+                    aweme_id=job_id,
+                    update_index=False,  # job web track trong jobs.db, không ghi index.csv của CLI
+                )
+            transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+
+            await jobs_store.update_job(job_id, prep_status="translating")
+            transcript_vi_path = folder / "transcript-vi.json"
+            if transcript_vi_path.exists():
+                transcript_vi = json.loads(transcript_vi_path.read_text(encoding="utf-8"))
+            else:
+                transcript_vi = await translate_transcript(
+                    transcript, target_language=job["target_language"] or "vi"
+                )
+                transcript_vi_path.write_text(
+                    json.dumps(transcript_vi, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+
+            # .srt rời không phụ thuộc gì vào layout -> xuất luôn ở đây.
+            generate_srt(transcript_vi, str(folder / "subtitle_vi.srt"))
+
+            # Luôn kèm bản .srt tiếng Anh, tái dùng bản dịch vi nếu target_language
+            # đã là "en" để khỏi tốn thêm 1 lượt gọi LLM.
+            transcript_en_path = folder / "transcript-en.json"
+            if (job["target_language"] or "vi") == "en":
+                transcript_en = transcript_vi
+            elif transcript_en_path.exists():
+                transcript_en = json.loads(transcript_en_path.read_text(encoding="utf-8"))
+            else:
+                transcript_en = await translate_transcript(transcript, target_language="en")
+                transcript_en_path.write_text(
+                    json.dumps(transcript_en, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            generate_srt(transcript_en, str(folder / "subtitle_en.srt"))
+
+            segments = transcript_vi.get("segments", [])
+            await jobs_store.update_job(
+                job_id, prep_status="synthesizing", progress_current=0, progress_total=len(segments)
             )
-        transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
 
-        await jobs_store.update_job(job_id, prep_status="translating")
-        transcript_vi_path = folder / "transcript-vi.json"
-        if transcript_vi_path.exists():
-            transcript_vi = json.loads(transcript_vi_path.read_text(encoding="utf-8"))
-        else:
-            transcript_vi = await translate_transcript(
-                transcript, target_language=job["target_language"] or "vi"
+            async def on_progress(done: int, total: int) -> None:
+                await jobs_store.update_job(job_id, progress_current=done, progress_total=total)
+
+            tts = await synthesize_timeline(
+                segments,
+                gender=job.get("voice_gender"),
+                provider=job["provider"],
+                voice_code=job["voice_code"],
+                speed=job["speed"],
+                video_duration=job["video_duration"],
+                work_dir=folder,
+                output_path=str(folder / "dub_vi.mp3"),
+                log=print,
+                on_progress=on_progress,
             )
-            transcript_vi_path.write_text(
-                json.dumps(transcript_vi, ensure_ascii=False, indent=2), encoding="utf-8"
+            await jobs_store.update_job(
+                job_id, prep_status="ready", provider=tts["provider"], voice_code=tts["voice_code"]
             )
-
-        # .srt rời không phụ thuộc gì vào layout -> xuất luôn ở đây.
-        generate_srt(transcript_vi, str(folder / "subtitle_vi.srt"))
-
-        # Luôn kèm bản .srt tiếng Anh, tái dùng bản dịch vi nếu target_language
-        # đã là "en" để khỏi tốn thêm 1 lượt gọi LLM.
-        transcript_en_path = folder / "transcript-en.json"
-        if (job["target_language"] or "vi") == "en":
-            transcript_en = transcript_vi
-        elif transcript_en_path.exists():
-            transcript_en = json.loads(transcript_en_path.read_text(encoding="utf-8"))
-        else:
-            transcript_en = await translate_transcript(transcript, target_language="en")
-            transcript_en_path.write_text(
-                json.dumps(transcript_en, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        generate_srt(transcript_en, str(folder / "subtitle_en.srt"))
-
-        segments = transcript_vi.get("segments", [])
-        await jobs_store.update_job(
-            job_id, prep_status="synthesizing", progress_current=0, progress_total=len(segments)
-        )
-
-        async def on_progress(done: int, total: int) -> None:
-            await jobs_store.update_job(job_id, progress_current=done, progress_total=total)
-
-        tts = await synthesize_timeline(
-            segments,
-            gender=job.get("voice_gender"),
-            provider=job["provider"],
-            voice_code=job["voice_code"],
-            speed=job["speed"],
-            video_duration=job["video_duration"],
-            work_dir=folder,
-            output_path=str(folder / "dub_vi.mp3"),
-            log=print,
-            on_progress=on_progress,
-        )
-        await jobs_store.update_job(
-            job_id, prep_status="ready", provider=tts["provider"], voice_code=tts["voice_code"]
-        )
-    except Exception as e:
-        await _fail(job_id, e)
-        return
+        except Exception as e:
+            await _fail(job_id, e)
+            return
 
     await maybe_render(job_id)
 
@@ -235,5 +247,23 @@ async def _render(job_id: str) -> None:
         await extract_thumbnail(str(output_path), str(folder / "thumbnail.jpg"))
 
         await jobs_store.update_job(job_id, status="done")
+
+        # Nếu job thuộc batch → cập nhật tiến độ batch
+        await _check_batch_completion(job_id)
     except Exception as e:
         await _fail(job_id, e)
+
+
+async def _check_batch_completion(job_id: str) -> None:
+    """Nếu job thuộc batch, tăng done_jobs. Khi tất cả job done → batch chuyển
+    sang 'awaiting_merge' để hỏi user có muốn ghép không."""
+    job = await jobs_store.get_job(job_id)
+    if job is None or not job.get("batch_id"):
+        return
+    batch = await jobs_store.increment_batch_done(job["batch_id"])
+    if batch:
+        print(
+            f"[batch] Job {job_id} done. Batch {batch['id']}: "
+            f"{batch['done_jobs']}/{batch['total_jobs']} — status={batch['status']}"
+        )
+

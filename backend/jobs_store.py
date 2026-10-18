@@ -1,6 +1,8 @@
 """
 SQLite store cho job web (Phase 0-2) — tách biệt hoàn toàn với index.csv của
 crawler/CLI hiện có, không đụng vào store.py.
+
+Mở rộng Phase 3: thêm bảng batches cho xử lý hàng loạt + ghép video.
 """
 import asyncio
 import sqlite3
@@ -10,7 +12,7 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).parent.parent / "jobs.db"
 
-_SCHEMA = """
+_SCHEMA_JOBS = """
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     video_url TEXT NOT NULL,
@@ -39,8 +41,24 @@ CREATE TABLE IF NOT EXISTS jobs (
     subtitles_enabled INTEGER DEFAULT 1,
     progress_current INTEGER DEFAULT 0,
     progress_total INTEGER DEFAULT 0,
+    batch_id TEXT,
+    batch_order INTEGER,
     created_at TEXT,
     updated_at TEXT
+);
+"""
+
+_SCHEMA_BATCHES = """
+CREATE TABLE IF NOT EXISTS batches (
+    id            TEXT PRIMARY KEY,
+    status        TEXT DEFAULT 'processing',
+    total_jobs    INTEGER NOT NULL,
+    done_jobs     INTEGER DEFAULT 0,
+    merge_approved INTEGER,
+    folder        TEXT,
+    error         TEXT,
+    created_at    TEXT,
+    updated_at    TEXT
 );
 """
 
@@ -53,7 +71,14 @@ def _conn() -> sqlite3.Connection:
 
 def _init_db_sync() -> None:
     with _conn() as conn:
-        conn.execute(_SCHEMA)
+        conn.execute(_SCHEMA_JOBS)
+        conn.execute(_SCHEMA_BATCHES)
+        # Migration: thêm cột batch cho DB cũ đã tồn tại
+        for col, col_type in [("batch_id", "TEXT"), ("batch_order", "INTEGER")]:
+            try:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_type}")
+            except sqlite3.OperationalError:
+                pass  # cột đã có
 
 
 async def init_db() -> None:
@@ -86,6 +111,8 @@ def _create_job_sync(fields: dict) -> dict:
         "subtitles_enabled": 1,
         "progress_current": 0,
         "progress_total": 0,
+        "batch_id": fields.get("batch_id"),
+        "batch_order": fields.get("batch_order"),
         "created_at": now,
         "updated_at": now,
     }
@@ -152,3 +179,116 @@ def _list_jobs_sync(limit: int) -> list[dict]:
 
 async def list_jobs(limit: int = 50) -> list[dict]:
     return await asyncio.to_thread(_list_jobs_sync, limit)
+
+
+# ── Batch CRUD ────────────────────────────────────────────────────────────────
+
+def _create_batch_sync(batch_id: str, total_jobs: int, folder: str) -> dict:
+    now = datetime.now().isoformat(timespec="seconds")
+    row = {
+        "id": batch_id,
+        "status": "processing",
+        "total_jobs": total_jobs,
+        "done_jobs": 0,
+        "merge_approved": None,
+        "folder": folder,
+        "error": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    cols = ", ".join(row.keys())
+    placeholders = ", ".join(f":{k}" for k in row.keys())
+    with _conn() as conn:
+        conn.execute(f"INSERT INTO batches ({cols}) VALUES ({placeholders})", row)
+    return row
+
+
+async def create_batch(batch_id: str, total_jobs: int, folder: str) -> dict:
+    return await asyncio.to_thread(_create_batch_sync, batch_id, total_jobs, folder)
+
+
+def _get_batch_sync(batch_id: str) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM batches WHERE id = ?", (batch_id,)).fetchone()
+    return dict(row) if row else None
+
+
+async def get_batch(batch_id: str) -> dict | None:
+    return await asyncio.to_thread(_get_batch_sync, batch_id)
+
+
+def _update_batch_sync(batch_id: str, fields: dict) -> None:
+    if not fields:
+        return
+    fields = {**fields, "updated_at": datetime.now().isoformat(timespec="seconds")}
+    set_clause = ", ".join(f"{k} = :{k}" for k in fields.keys())
+    with _conn() as conn:
+        conn.execute(f"UPDATE batches SET {set_clause} WHERE id = :id", {**fields, "id": batch_id})
+
+
+async def update_batch(batch_id: str, **fields) -> None:
+    await asyncio.to_thread(_update_batch_sync, batch_id, fields)
+
+
+def _list_batches_sync(limit: int) -> list[dict]:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM batches ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def list_batches(limit: int = 20) -> list[dict]:
+    return await asyncio.to_thread(_list_batches_sync, limit)
+
+
+def _get_batch_jobs_sync(batch_id: str) -> list[dict]:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE batch_id = ? ORDER BY batch_order ASC", (batch_id,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_batch_jobs(batch_id: str) -> list[dict]:
+    return await asyncio.to_thread(_get_batch_jobs_sync, batch_id)
+
+
+def _increment_batch_done_sync(batch_id: str) -> dict | None:
+    """Tăng done_jobs lên 1 (nguyên tử). Nếu done_jobs == total_jobs → đổi status
+    thành 'awaiting_merge'. Trả về batch row sau khi cập nhật."""
+    now = datetime.now().isoformat(timespec="seconds")
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE batches SET done_jobs = done_jobs + 1, updated_at = ? WHERE id = ?",
+            (now, batch_id),
+        )
+        row = conn.execute("SELECT * FROM batches WHERE id = ?", (batch_id,)).fetchone()
+        if row and row["done_jobs"] >= row["total_jobs"] and row["status"] == "processing":
+            conn.execute(
+                "UPDATE batches SET status = 'awaiting_merge', updated_at = ? WHERE id = ?",
+                (now, batch_id),
+            )
+            row = conn.execute("SELECT * FROM batches WHERE id = ?", (batch_id,)).fetchone()
+    return dict(row) if row else None
+
+
+async def increment_batch_done(batch_id: str) -> dict | None:
+    return await asyncio.to_thread(_increment_batch_done_sync, batch_id)
+
+
+def _claim_merge_sync(batch_id: str) -> bool:
+    """Đặt status='merging' CHỈ KHI batch đang ở awaiting_merge và merge_approved=1.
+    Trả về True nếu giành được quyền merge."""
+    now = datetime.now().isoformat(timespec="seconds")
+    with _conn() as conn:
+        cur = conn.execute(
+            "UPDATE batches SET status = 'merging', updated_at = ? "
+            "WHERE id = ? AND status = 'awaiting_merge' AND merge_approved = 1",
+            (now, batch_id),
+        )
+        return cur.rowcount == 1
+
+
+async def claim_merge(batch_id: str) -> bool:
+    return await asyncio.to_thread(_claim_merge_sync, batch_id)

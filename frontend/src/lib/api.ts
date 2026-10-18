@@ -84,6 +84,9 @@ export type Job = {
   progress_total: number;
   source_video_url: string | null;
   result: JobResult | null;
+  // Batch context
+  batch_id: string | null;
+  batch_order: number | null;
 };
 export type JobCreatePayload = {
   video_url: string;
@@ -193,3 +196,79 @@ export function jobProgressPercent(job: Job): number {
   // Giai đoạn user thao tác: tiến độ thật nằm ở nhánh nền, quy về khoảng 15-90%.
   return 15 + Math.round(prepProgressPercent(job) * 0.75);
 }
+
+
+// ── Batch types ──────────────────────────────────────────────────────────────
+
+export type BatchVideoItem = {
+  order: number;
+  video_url: string;
+};
+
+export type BatchCreatePayload = {
+  videos: BatchVideoItem[];
+  voice_gender: "male" | "female";
+  stt_language?: string | null;
+  target_language: string;
+  volume_goc: number;
+  volume_dub: number;
+  target_resolution: 720 | 1080;
+  upscale: boolean;
+  provider?: string;
+  voice_code?: string;
+};
+
+export type BatchJobItem = {
+  id: string;
+  batch_order: number;
+  video_url: string;
+  title: string | null;
+  status: string;
+  prep_status: string;
+  error: string | null;
+  progress_current: number;
+  progress_total: number;
+};
+
+export type Batch = {
+  id: string;
+  status: string;
+  total_jobs: number;
+  done_jobs: number;
+  merge_approved: boolean | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  jobs: BatchJobItem[];
+  merged_video_url: string | null;
+};
+
+export const BATCH_STATUS_LABELS: Record<string, string> = {
+  processing: "Đang xử lý",
+  awaiting_merge: "Chờ phê duyệt ghép video",
+  merging: "Đang ghép video",
+  done: "Hoàn tất",
+  error: "Lỗi",
+};
+
+// ── Batch API ────────────────────────────────────────────────────────────────
+
+export const batchApi = {
+  createBatch: (payload: BatchCreatePayload) =>
+    request<Batch>("/api/batches", { method: "POST", body: JSON.stringify(payload) }),
+  listBatches: () => request<Batch[]>("/api/batches"),
+  getBatch: (id: string) => request<Batch>(`/api/batches/${id}`),
+  approveMerge: (id: string) =>
+    request<Batch>(`/api/batches/${id}/merge`, { method: "POST" }),
+  skipMerge: (id: string) =>
+    request<Batch>(`/api/batches/${id}/skip-merge`, { method: "POST" }),
+  /** Job tiếp theo trong batch cần thao tác của user (awaiting_masks/awaiting_layout). */
+  getNextJob: (batchId: string) =>
+    request<{ job_id: string | null; batch_order?: number; done: boolean }>(
+      `/api/batches/${batchId}/next-job`
+    ),
+  /** Retry 1 job lỗi trong batch — điều chỉnh done_jobs counter của batch. */
+  retryBatchJob: (batchId: string, jobId: string) =>
+    request<Job>(`/api/batches/${batchId}/jobs/${jobId}/retry`, { method: "POST" }),
+};
+

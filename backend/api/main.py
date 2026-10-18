@@ -25,7 +25,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 from .. import jobs_store  # noqa: E402
 from . import pipeline  # noqa: E402
-from .routers import jobs, meta, voices  # noqa: E402
+from .routers import batches, jobs, meta, voices  # noqa: E402
 
 app = FastAPI(title="Video Dubbing API")
 
@@ -45,6 +45,7 @@ downloads_dir.mkdir(exist_ok=True)
 app.mount("/files", StaticFiles(directory=str(downloads_dir)), name="files")
 
 app.include_router(jobs.router, prefix="/api")
+app.include_router(batches.router, prefix="/api")
 app.include_router(voices.router, prefix="/api")
 app.include_router(meta.router, prefix="/api")
 
