@@ -139,7 +139,7 @@ def _rel_folder(folder: str) -> str:
 
 class BatchVideoItem(BaseModel):
     """Một dòng trong bảng nhập liệu batch: STT + link."""
-    order: int = Field(ge=1, le=7)
+    order: int = Field(ge=1, le=9)
     video_url: str
 
 
